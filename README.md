@@ -62,6 +62,54 @@ internal/service/       orchestration of the backup workflow
 
 Environment variables already present in the shell take precedence over values inside the env file, which is useful for secret injection in production.
 
+## GitHub Release Automation
+
+This repository includes a GitHub Actions workflow at [.github/workflows/release.yml](/Users/xero/data/Neelgai/postgres-backup/.github/workflows/release.yml) that:
+
+- runs on `ubuntu-22.04`
+- runs `go test ./...`
+- builds a Linux `amd64` binary with the Git tag embedded in `pgbackup -version`
+- uploads the raw binary as `pgbackup_<tag>_linux_amd64`
+- packages the binary as `pgbackup_<tag>_linux_amd64.tar.gz`
+- uploads a `.sha256` checksum file for both assets to the GitHub Release page
+
+To publish a release asset:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The workflow is tag-driven and triggers on tags matching `v*`.
+
+## Release Requirements
+
+For the release workflow to succeed on GitHub, you need:
+
+- Actions enabled for the repository
+- the default `GITHUB_TOKEN` allowed to create and update releases
+- a pushed Git tag such as `v1.0.0`
+
+The downloaded binary is built for Linux `amd64` and is a good fit for Ubuntu 22.04 x86_64 hosts.
+
+## Runtime Requirements For Released Binary
+
+The GitHub Release asset contains only the `pgbackup` binary. The target Ubuntu 22.04 host still needs:
+
+- `pg_dump`
+- `pg_restore`
+- network access to PostgreSQL and S3
+- your runtime configuration file or environment variables
+
+Example Ubuntu package install:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y postgresql-client
+```
+
+If you need a specific PostgreSQL client version for compatibility with your server, install that version explicitly instead of the generic package.
+
 ## Configuration
 
 The binary reads configuration from environment variables, optionally seeded from a `KEY=VALUE` file passed through `-config`.
