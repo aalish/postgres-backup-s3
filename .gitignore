@@ -1,0 +1,7 @@
+.gocache/
+.gomodcache/
+dist/
+bin/
+backups/
+*.env
+!.env.example
