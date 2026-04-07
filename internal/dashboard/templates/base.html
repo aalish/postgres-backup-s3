@@ -1,0 +1,61 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} | Backup Console</title>
+  <meta name="csrf-token" content="{{.CSRFToken}}">
+  <link rel="stylesheet" href="/static/dashboard.css?v={{.Version}}">
+  <script defer src="/static/app.js?v={{.Version}}"></script>
+</head>
+<body data-page="{{.Page}}" class="{{if .Authenticated}}app-body{{else}}login-body{{end}}">
+  {{if .Authenticated}}
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">PB</span>
+        <div>
+          <strong>Backup Console</strong>
+          <span>Admin dashboard</span>
+        </div>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="/dashboard" class="{{if eq .Page "dashboard"}}is-active{{end}}">Dashboard</a>
+        <a href="/backups" class="{{if eq .Page "backups"}}is-active{{end}}">Backups</a>
+        <a href="/settings" class="{{if eq .Page "settings"}}is-active{{end}}">Settings</a>
+        <a href="/logs" class="{{if eq .Page "logs"}}is-active{{end}}">Logs</a>
+      </nav>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div>
+          <h1>{{.Title}}</h1>
+          <p>Operational controls for PostgreSQL backups and retention.</p>
+        </div>
+        <div class="topbar-actions">
+          <div class="user-chip">
+            <span class="user-chip-label">Signed in</span>
+            <strong>{{.Username}}</strong>
+          </div>
+          <form method="post" action="/logout" class="logout-form">
+            <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+            <button type="submit" class="button button-secondary">Logout</button>
+          </form>
+        </div>
+      </header>
+
+      <main class="content">
+        {{template "content" .}}
+      </main>
+    </div>
+  </div>
+  {{else}}
+  <main class="login-shell">
+    {{template "content" .}}
+  </main>
+  {{end}}
+</body>
+</html>
+{{end}}

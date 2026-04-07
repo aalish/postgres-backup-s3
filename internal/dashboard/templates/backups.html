@@ -1,0 +1,106 @@
+{{define "content"}}
+<section class="page-grid">
+  <div class="panel panel-wide">
+    <div class="panel-header panel-header-wrap">
+      <div>
+        <h2>Backups</h2>
+        <p>Search, filter, and inspect the objects currently stored in S3.</p>
+      </div>
+      <div class="panel-actions">
+        <button type="button" class="button button-primary" data-action="trigger-backup">Trigger Backup</button>
+      </div>
+    </div>
+
+    <form id="backup-filters" class="toolbar-grid">
+      <label>
+        <span>Name Prefix</span>
+        <input type="text" name="namePrefix" placeholder="neeldb">
+      </label>
+      <label>
+        <span>Status</span>
+        <select name="status">
+          <option value="all">All</option>
+          <option value="available">Available</option>
+          <option value="expiring_soon">Expiring Soon</option>
+          <option value="expired">Expired</option>
+        </select>
+      </label>
+      <label>
+        <span>From</span>
+        <input type="date" name="from">
+      </label>
+      <label>
+        <span>To</span>
+        <input type="date" name="to">
+      </label>
+      <label>
+        <span>Sort By</span>
+        <select name="sort">
+          <option value="createdAt">Created</option>
+          <option value="name">Name</option>
+          <option value="size">Size</option>
+          <option value="status">Status</option>
+        </select>
+      </label>
+      <label>
+        <span>Order</span>
+        <select name="order">
+          <option value="desc">Descending</option>
+          <option value="asc">Ascending</option>
+        </select>
+      </label>
+      <div class="toolbar-actions">
+        <button type="submit" class="button button-secondary">Apply Filters</button>
+      </div>
+    </form>
+
+    <div id="backup-action-message" class="inline-message hidden"></div>
+
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Size</th>
+            <th>Created</th>
+            <th>S3 Path</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="backups-table">
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="backups-pagination" class="table-footer"></div>
+  </div>
+
+  <div class="panel panel-wide">
+    <div class="panel-header">
+      <div>
+        <h2>Backup History</h2>
+        <p>Job history includes who triggered the backup and the final outcome.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Started</th>
+            <th>Triggered By</th>
+            <th>Source</th>
+            <th>Status</th>
+            <th>S3 Path</th>
+          </tr>
+        </thead>
+        <tbody id="backup-runs-table">
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{{end}}

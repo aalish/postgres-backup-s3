@@ -1,0 +1,54 @@
+{{define "content"}}
+<section class="page-grid">
+  <div class="panel panel-wide">
+    <div class="panel-header">
+      <div>
+        <h2>Retention Runs</h2>
+        <p>Each run records how many objects were checked and how many were deleted automatically.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Started</th>
+            <th>Trigger</th>
+            <th>Status</th>
+            <th>Evaluated</th>
+            <th>Deleted</th>
+          </tr>
+        </thead>
+        <tbody id="retention-runs-table">
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel panel-wide">
+    <div class="panel-header">
+      <div>
+        <h2>Audit Log</h2>
+        <p>Structured auth, configuration, backup, and retention events.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Type</th>
+            <th>Actor</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody id="audit-events-table">
+          <tr class="skeleton-row"><td colspan="4"></td></tr>
+          <tr class="skeleton-row"><td colspan="4"></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{{end}}

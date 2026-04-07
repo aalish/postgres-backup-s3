@@ -1,0 +1,63 @@
+{{define "content"}}
+<section class="page-grid">
+  <div class="panel panel-wide">
+    <div class="panel-header">
+      <div>
+        <h2>Runtime Settings</h2>
+        <p>Values below are stored in MongoDB Atlas and become the active runtime configuration.</p>
+      </div>
+    </div>
+
+    <div id="settings-message" class="inline-message hidden"></div>
+
+    <form id="settings-form" class="stack-form settings-form">
+      <div class="settings-grid">
+        <label>
+          <span>Retention Days</span>
+          <input type="number" name="retentionDays" min="1" max="3650" required>
+        </label>
+        <label>
+          <span>Backup Schedule</span>
+          <input type="text" name="backupSchedule" placeholder="0 2 * * *" pattern=".+ .+ .+ .+ .+" required>
+        </label>
+        <label>
+          <span>S3 Bucket</span>
+          <input type="text" name="s3Bucket" required>
+        </label>
+        <label>
+          <span>S3 Prefix</span>
+          <input type="text" name="s3Prefix">
+        </label>
+        <label>
+          <span>Backup Output Directory</span>
+          <input type="text" name="backupOutputDir" required>
+        </label>
+        <label>
+          <span>Filename Prefix</span>
+          <input type="text" name="backupFilenamePrefix" required>
+        </label>
+        <label>
+          <span>Compression</span>
+          <input type="number" name="backupCompression" min="0" max="9" required>
+        </label>
+        <label class="checkbox-field">
+          <input type="checkbox" name="notificationEnabled">
+          <span>Enable failure notifications</span>
+        </label>
+        <label>
+          <span>Webhook URL</span>
+          <input type="url" name="webhookURL" placeholder="https://example.com/alerts">
+        </label>
+        <label>
+          <span>Webhook Timeout</span>
+          <input type="text" name="webhookTimeout" placeholder="10s" required>
+        </label>
+      </div>
+
+      <div class="form-footer">
+        <button type="submit" class="button button-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</section>
+{{end}}

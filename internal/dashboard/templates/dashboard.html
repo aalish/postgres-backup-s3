@@ -1,0 +1,57 @@
+{{define "content"}}
+<section class="page-grid">
+  <div class="panel">
+    <div class="panel-header">
+      <div>
+        <h2>Overview</h2>
+        <p>Live backup activity and the latest retention result.</p>
+      </div>
+      <button type="button" class="button button-primary" data-action="trigger-backup">Trigger Backup</button>
+    </div>
+    <div id="backup-action-message" class="inline-message hidden"></div>
+
+    <div class="stat-grid" id="dashboard-stats">
+      <div class="stat-card skeleton-card"></div>
+      <div class="stat-card skeleton-card"></div>
+      <div class="stat-card skeleton-card"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <div>
+        <h2>Current Job</h2>
+        <p>Manual and scheduled jobs stream their latest status here.</p>
+      </div>
+    </div>
+    <div id="current-job-panel" class="empty-state">Loading backup status…</div>
+  </div>
+
+  <div class="panel panel-wide">
+    <div class="panel-header">
+      <div>
+        <h2>Recent Backups</h2>
+        <p>The most recent objects currently present in S3.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Size</th>
+            <th>Created</th>
+            <th>S3 Path</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="dashboard-backups">
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+          <tr class="skeleton-row"><td colspan="5"></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{{end}}

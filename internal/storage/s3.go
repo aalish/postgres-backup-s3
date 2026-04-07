@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,6 +28,14 @@ type S3Uploader struct {
 	uploader    *manager.Uploader
 	retryConfig config.RetryConfig
 	logger      *slog.Logger
+}
+
+type ObjectInfo struct {
+	Key          string    `json:"key"`
+	Filename     string    `json:"filename"`
+	Size         int64     `json:"size"`
+	LastModified time.Time `json:"lastModified"`
+	S3URI        string    `json:"s3URI"`
 }
 
 func NewS3Uploader(ctx context.Context, cfg config.S3Config, retryConfig config.RetryConfig, logger *slog.Logger) (*S3Uploader, error) {
@@ -114,6 +123,52 @@ func (u *S3Uploader) verifyUpload(ctx context.Context, key string, expectedSize 
 	}
 
 	u.logger.Info("S3 upload verified", "bucket", u.bucket, "key", key, "size_bytes", remoteSize)
+	return nil
+}
+
+func (u *S3Uploader) ListObjects(ctx context.Context) ([]ObjectInfo, error) {
+	var objects []ObjectInfo
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(u.bucket),
+	}
+	if cleanPrefix := strings.Trim(strings.TrimSpace(u.prefix), "/"); cleanPrefix != "" {
+		input.Prefix = aws.String(cleanPrefix + "/")
+	}
+
+	paginator := s3.NewListObjectsV2Paginator(u.client, input)
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list S3 objects: %w", err)
+		}
+		for _, object := range page.Contents {
+			key := aws.ToString(object.Key)
+			objects = append(objects, ObjectInfo{
+				Key:          key,
+				Filename:     path.Base(key),
+				Size:         aws.ToInt64(object.Size),
+				LastModified: aws.ToTime(object.LastModified),
+				S3URI:        fmt.Sprintf("s3://%s/%s", u.bucket, key),
+			})
+		}
+	}
+
+	sort.Slice(objects, func(i, j int) bool {
+		return objects[i].LastModified.After(objects[j].LastModified)
+	})
+
+	return objects, nil
+}
+
+func (u *S3Uploader) DeleteObject(ctx context.Context, key string) error {
+	if _, err := u.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(u.bucket),
+		Key:    aws.String(key),
+	}); err != nil {
+		return fmt.Errorf("delete S3 object %s: %w", key, err)
+	}
+
+	u.logger.Info("deleted S3 object", "bucket", u.bucket, "key", key)
 	return nil
 }
 

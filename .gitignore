@@ -3,5 +3,7 @@
 dist/
 bin/
 backups/
+dev-db/
+*.dump
 *.env
 !.env.example

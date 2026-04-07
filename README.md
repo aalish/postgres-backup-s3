@@ -1,6 +1,9 @@
 # PostgreSQL Backup to S3
 
-`pgbackup` is a production-oriented Go CLI that creates a full PostgreSQL backup with `pg_dump`, validates the archive with `pg_restore --list`, uploads it to Amazon S3, verifies the uploaded object, and only then removes the local dump file.
+This repository now contains two production-oriented Go binaries:
+
+- `pgbackup`: a CLI that creates a full PostgreSQL backup with `pg_dump`, validates the archive with `pg_restore --list`, uploads it to Amazon S3, verifies the uploaded object, and only then removes the local dump file.
+- `pgbackupd`: a secure web dashboard for triggering backups, browsing S3 backup history, editing runtime settings stored in MongoDB Atlas, and enforcing retention automatically.
 
 The generated dump is a PostgreSQL custom archive (`.dump`) created with `pg_dump --format=custom --create --blobs`, so it contains the schema, data, indexes, constraints, triggers, functions, and other database objects needed for a complete database restore.
 
@@ -15,16 +18,23 @@ The generated dump is a PostgreSQL custom archive (`.dump`) created with `pg_dum
 - Archive validation before upload
 - Upload verification before deleting the local file
 - CLI-friendly exit codes for cron, systemd, or CI/CD jobs
+- Secure admin dashboard with JWT cookie authentication and CSRF protection
+- MongoDB Atlas-backed runtime settings with defaults
+- Automated retention enforcement with audit and retention-run logs
 
 ## Project Layout
 
 ```text
 cmd/pgbackup/           CLI entrypoint
+cmd/pgbackupd/          dashboard server entrypoint
 internal/config/        environment and env-file configuration loading
 internal/backup/        pg_dump execution and archive validation
 internal/storage/       S3 upload and verification
 internal/retry/         retry helper
 internal/service/       orchestration of the backup workflow
+internal/dashboard/     embedded admin UI, auth, and HTTP handlers
+internal/store/         MongoDB persistence for settings, sessions, and logs
+internal/runtimecfg/    mutable runtime settings loaded from MongoDB
 ```
 
 ## Requirements
@@ -36,6 +46,7 @@ internal/service/       orchestration of the backup workflow
 - AWS credentials available through either:
   - `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
   - an IAM role / default AWS credential chain
+- MongoDB Atlas reachable from the host when running `pgbackupd`
 - Network access from the host to PostgreSQL and Amazon S3
 
 ## Setup
@@ -62,16 +73,34 @@ internal/service/       orchestration of the backup workflow
 
 Environment variables already present in the shell take precedence over values inside the env file, which is useful for secret injection in production.
 
+## Dashboard Setup
+
+The dashboard server reuses the same PostgreSQL and AWS connection settings as the CLI, then adds:
+
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+- `JWT_SECRET`
+- `MONGODB_URI`
+
+Build and run the dashboard:
+
+```bash
+go build -o bin/pgbackupd ./cmd/pgbackupd
+./bin/pgbackupd -config ./pgbackup.env
+```
+
+By default the dashboard listens on `:8080`. For local HTTP development, set `COOKIE_SECURE=false`; keep it `true` in production behind HTTPS.
+
 ## GitHub Release Automation
 
 This repository includes a GitHub Actions workflow at [.github/workflows/release.yml](/Users/xero/data/Neelgai/postgres-backup/.github/workflows/release.yml) that:
 
 - runs on `ubuntu-22.04`
 - runs `go test ./...`
-- builds a Linux `amd64` binary with the Git tag embedded in `pgbackup -version`
-- uploads the raw binary as `pgbackup_<tag>_linux_amd64`
-- packages the binary as `pgbackup_<tag>_linux_amd64.tar.gz`
-- uploads a `.sha256` checksum file for both assets to the GitHub Release page
+- builds Linux `amd64` binaries with the Git tag embedded in `pgbackup -version` and `pgbackupd -version`
+- uploads raw binaries as `pgbackup_<tag>_linux_amd64` and `pgbackupd_<tag>_linux_amd64`
+- packages both binaries as `.tar.gz` archives
+- uploads a `.sha256` checksum file for each binary and archive to the GitHub Release page
 
 To publish a release asset:
 
@@ -90,16 +119,17 @@ For the release workflow to succeed on GitHub, you need:
 - the default `GITHUB_TOKEN` allowed to create and update releases
 - a pushed Git tag such as `v1.0.0`
 
-The downloaded binary is built for Linux `amd64` and is a good fit for Ubuntu 22.04 x86_64 hosts.
+The downloaded binaries are built for Linux `amd64` and are a good fit for Ubuntu 22.04 x86_64 hosts.
 
 ## Runtime Requirements For Released Binary
 
-The GitHub Release asset contains only the `pgbackup` binary. The target Ubuntu 22.04 host still needs:
+The GitHub Release assets contain `pgbackup` and `pgbackupd`. The target Ubuntu 22.04 host still needs:
 
 - `pg_dump`
 - `pg_restore`
 - network access to PostgreSQL and S3
 - your runtime configuration file or environment variables
+- MongoDB Atlas access for the dashboard server
 
 Example Ubuntu package install:
 
@@ -109,6 +139,20 @@ sudo apt-get install -y postgresql-client
 ```
 
 If you need a specific PostgreSQL client version for compatibility with your server, install that version explicitly instead of the generic package.
+
+## Dashboard Capabilities
+
+`pgbackupd` provides:
+
+- a secure login page using short-lived JWT access cookies plus refresh-token rotation
+- HttpOnly, Secure, `SameSite=Strict` cookies for auth tokens
+- CSRF protection on state-changing endpoints
+- login rate limiting
+- a paginated backup table sourced from S3
+- manual backup triggering with live status polling
+- MongoDB-backed settings for retention, schedule, S3 bucket/prefix, output path, compression, and webhook notifications
+- automatic retention runs on startup, config changes, and a background hourly loop
+- audit logs for auth, backup, retention, and config changes
 
 ## Configuration
 

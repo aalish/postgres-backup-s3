@@ -1,0 +1,29 @@
+{{define "content"}}
+<section class="login-card">
+  <div class="login-card-header">
+    <span class="eyebrow">Secure Access</span>
+    <h1>Sign in to the backup dashboard</h1>
+    <p>Short-lived session cookies, CSRF protection, and refresh rotation are enforced for every admin session.</p>
+  </div>
+
+  {{if .LoginError}}
+  <div class="inline-message error">{{.LoginError}}</div>
+  {{end}}
+
+  <form method="post" action="/login" class="stack-form">
+    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
+
+    <label>
+      <span>Username</span>
+      <input type="text" name="username" autocomplete="username" required>
+    </label>
+
+    <label>
+      <span>Password</span>
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+
+    <button type="submit" class="button button-primary button-block">Sign In</button>
+  </form>
+</section>
+{{end}}
