@@ -173,12 +173,34 @@ func NewBackupManager(base config.Config, settings *SettingsService, store *stor
 	}
 }
 
-func (m *BackupManager) Trigger(ctx context.Context, actor, source string) (store.BackupRun, error) {
+// Trigger starts a backup. In multi-database mode, databaseID is required and
+// identifies an entry from databases.json. In single-database mode, databaseID
+// must be empty and the global PG* config is used.
+func (m *BackupManager) Trigger(ctx context.Context, actor, source, databaseID string) (store.BackupRun, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.current != nil && m.current.Status == "running" {
 		return *m.current, errBackupRunning
+	}
+
+	var (
+		dbName string
+	)
+	if m.base.MultiDatabaseMode {
+		if databaseID == "" {
+			return store.BackupRun{}, fmt.Errorf("database_id is required in multi-database mode")
+		}
+		db, err := m.base.Databases.GetByID(databaseID)
+		if err != nil {
+			return store.BackupRun{}, fmt.Errorf("unknown database_id %q: %w", databaseID, err)
+		}
+		if !db.Enabled {
+			return store.BackupRun{}, fmt.Errorf("database %q is disabled", databaseID)
+		}
+		dbName = db.Name
+	} else if databaseID != "" {
+		return store.BackupRun{}, fmt.Errorf("multi-database mode is not enabled; remove database_id")
 	}
 
 	settings, err := m.settings.GetActive(ctx)
@@ -189,6 +211,8 @@ func (m *BackupManager) Trigger(ctx context.Context, actor, source string) (stor
 	now := time.Now().UTC()
 	run := store.BackupRun{
 		ID:            store.NewID(),
+		DatabaseID:    databaseID,
+		DatabaseName:  dbName,
 		TriggeredBy:   actor,
 		TriggerSource: source,
 		Status:        "running",
@@ -202,10 +226,11 @@ func (m *BackupManager) Trigger(ctx context.Context, actor, source string) (stor
 	m.wg.Add(1)
 	go m.execute(run, settings)
 
-	m.logger.Info("backup job queued", "run_id", run.ID, "triggered_by", actor, "trigger_source", source)
+	m.logger.Info("backup job queued", "run_id", run.ID, "database_id", databaseID, "triggered_by", actor, "trigger_source", source)
 	if m.recordAudit != nil {
 		m.recordAudit(context.Background(), "backup.started", actor, "Backup job started", map[string]any{
 			"runId":         run.ID,
+			"databaseId":    databaseID,
 			"triggerSource": source,
 		})
 	}
@@ -226,16 +251,45 @@ func (m *BackupManager) execute(run store.BackupRun, settings runtimecfg.Setting
 	}()
 
 	jobCfg := settings.Apply(m.base)
-	svc, err := service.New(context.Background(), jobCfg, m.logger)
-	if err == nil {
-		var result service.Result
-		result, err = svc.RunWithResult(context.Background())
-		if err == nil {
-			run.Status = "succeeded"
-			run.ArchiveFilename = result.ArchiveFilename
-			run.ArchivePath = result.ArchivePath
-			run.S3URI = result.S3URI
-			run.S3Key = storage.BuildObjectKey(settings.S3Prefix, result.ArchiveFilename)
+	var err error
+	if run.DatabaseID != "" {
+		multiSvc, mErr := service.NewMultiDatabaseService(context.Background(), jobCfg, m.logger)
+		if mErr != nil {
+			err = mErr
+		} else {
+			result, bErr := multiSvc.BackupSpecificDatabase(context.Background(), run.DatabaseID)
+			if bErr != nil {
+				err = bErr
+			} else if result.Error != nil {
+				err = result.Error
+			} else {
+				db, _ := jobCfg.Databases.GetByID(run.DatabaseID)
+				s3Prefix := ""
+				if db != nil {
+					s3Prefix = db.GetS3Prefix(jobCfg.S3.Prefix)
+				}
+				run.Status = "succeeded"
+				run.ArchiveFilename = result.ArchiveFilename
+				run.ArchivePath = result.ArchivePath
+				run.S3URI = result.S3URI
+				run.S3Key = storage.BuildObjectKey(s3Prefix, result.ArchiveFilename)
+				run.SizeBytes = result.ArchiveSize
+			}
+		}
+	} else {
+		svc, sErr := service.New(context.Background(), jobCfg, m.logger)
+		if sErr != nil {
+			err = sErr
+		} else {
+			var result service.Result
+			result, err = svc.RunWithResult(context.Background())
+			if err == nil {
+				run.Status = "succeeded"
+				run.ArchiveFilename = result.ArchiveFilename
+				run.ArchivePath = result.ArchivePath
+				run.S3URI = result.S3URI
+				run.S3Key = storage.BuildObjectKey(settings.S3Prefix, result.ArchiveFilename)
+			}
 		}
 	}
 
@@ -474,20 +528,41 @@ func (s *Scheduler) scheduleBackupLocked(settings runtimecfg.Settings) error {
 	}
 
 	entryID, err := s.cron.AddFunc(settings.BackupSchedule, func() {
-		if _, triggerErr := s.backups.Trigger(context.Background(), "scheduler", "scheduled"); triggerErr != nil {
-			if errors.Is(triggerErr, errBackupRunning) {
-				s.logger.Warn("scheduled backup skipped because another backup is running")
-				if s.recordAudit != nil {
-					s.recordAudit(context.Background(), "backup.skipped", "scheduler", "Scheduled backup skipped because another backup is already running", nil)
+		// In multi-database mode, fire one trigger per enabled database
+		// sequentially so the per-job lock in BackupManager is respected.
+		targets := []string{""}
+		if s.backups.base.MultiDatabaseMode {
+			targets = targets[:0]
+			for _, db := range s.backups.base.Databases.Databases {
+				if db.Enabled {
+					targets = append(targets, db.ID)
 				}
-				return
 			}
-			s.logger.Error("scheduled backup trigger failed", "error", triggerErr)
-			if s.recordAudit != nil {
-				s.recordAudit(context.Background(), "backup.schedule_error", "scheduler", "Failed to start scheduled backup", map[string]any{
-					"error": triggerErr.Error(),
-				})
+		}
+		for _, dbID := range targets {
+			_, triggerErr := s.backups.Trigger(context.Background(), "scheduler", "scheduled", dbID)
+			if triggerErr != nil {
+				if errors.Is(triggerErr, errBackupRunning) {
+					s.logger.Warn("scheduled backup skipped because another backup is running", "database_id", dbID)
+					if s.recordAudit != nil {
+						s.recordAudit(context.Background(), "backup.skipped", "scheduler", "Scheduled backup skipped because another backup is already running", map[string]any{
+							"databaseId": dbID,
+						})
+					}
+					continue
+				}
+				s.logger.Error("scheduled backup trigger failed", "database_id", dbID, "error", triggerErr)
+				if s.recordAudit != nil {
+					s.recordAudit(context.Background(), "backup.schedule_error", "scheduler", "Failed to start scheduled backup", map[string]any{
+						"databaseId": dbID,
+						"error":      triggerErr.Error(),
+					})
+				}
+				continue
 			}
+			// Wait for the in-flight backup to finish before queuing the next
+			// so we don't trip the BackupManager singleton lock.
+			s.backups.wg.Wait()
 		}
 	})
 	if err != nil {

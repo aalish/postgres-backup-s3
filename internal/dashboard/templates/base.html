@@ -517,6 +517,8 @@
             envIndicator.className = 'env-indicator';
             tooltip.innerHTML = '';
           }
+          // Let pages (e.g. /backups) react to selector changes.
+          window.dispatchEvent(new CustomEvent('databasechange', { detail: { databaseId: selectedId } }));
         });
       }
 
@@ -635,12 +637,14 @@
                 'X-CSRF-Token': csrfToken
               },
               credentials: 'same-origin',
-              body: JSON.stringify({})
+              body: JSON.stringify({ database_id: selectedDb })
             })
-            .then(response => response.json())
-            .then(data => {
+            .then(async response => {
+              const data = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                throw new Error(data.message || `HTTP ${response.status}`);
+              }
               window.showToast(`Backup started for ${db.name}`, 'success');
-              // Optionally reload after a delay
               if (window.location.pathname === '/backups') {
                 setTimeout(() => location.reload(), 2000);
               }
@@ -652,10 +656,8 @@
         );
       };
 
-      // Initialize on load
-      if (savedDb) {
-        updateIndicator(savedDb);
-      }
+      // Note: initial selection is restored inside the /api/restore/databases
+      // fetch handler above, once the options are populated.
     })();
   </script>
   {{else}}

@@ -117,6 +117,16 @@
     `}).join("");
   }
 
+  function classifyDatabaseBadge(item) {
+    const id = (item.databaseId || "").toLowerCase();
+    const tags = (item.tags || []).join(" ").toLowerCase();
+    const haystack = `${id} ${tags}`;
+    if (!item.databaseId) return { cls: "default", label: "DEFAULT" };
+    if (/(prod|production)/.test(haystack)) return { cls: "prod", label: "PROD" };
+    if (/(stag|staging)/.test(haystack)) return { cls: "staging", label: "STAGING" };
+    return { cls: "dev", label: "DEV" };
+  }
+
   function renderBackupRuns(target, items) {
     if (!target) return;
     if (!items.length) {
@@ -124,18 +134,11 @@
       return;
     }
     target.innerHTML = items.map((item) => {
-      // Extract database from s3URI or backup metadata
-      const dbMatch = item.s3URI?.match(/\/(neelgai_production|neeldb_development)[_\/]/);
-      const database = dbMatch ? dbMatch[1] : item.database || "default";
-      const dbBadge = database === "neelgai_production"
-        ? '<span class="table-db-badge prod">PROD</span>'
-        : database === "neeldb_development"
-        ? '<span class="table-db-badge dev">DEV</span>'
-        : '<span class="table-db-badge default">DEFAULT</span>';
-
+      const badge = classifyDatabaseBadge(item);
+      const dbLabel = item.databaseName || item.databaseId || "Default";
       return `
       <tr>
-        <td>${dbBadge} ${database === "neelgai_production" ? "Neelgai" : database === "neeldb_development" ? "Neeldb" : "Default"}</td>
+        <td><span class="table-db-badge ${badge.cls}">${badge.label}</span> ${escapeHTML(dbLabel)}</td>
         <td>${escapeHTML(formatTime(item.startedAt))}</td>
         <td>${escapeHTML(item.triggeredBy)}</td>
         <td>${escapeHTML(item.triggerSource)}</td>
@@ -197,9 +200,14 @@
   }
 
   async function triggerBackup(messageEl, refresh) {
+    const databaseId = (localStorage.getItem("selected_database") || "").trim();
     showMessage(messageEl, "info", "Starting backup…");
     try {
-      await api("/api/backups/trigger", { method: "POST" });
+      await api("/api/backups/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(databaseId ? { database_id: databaseId } : {}),
+      });
       showMessage(messageEl, "success", "Backup started. Status will update automatically.");
       await refresh();
     } catch (error) {
@@ -299,7 +307,10 @@
     };
 
     const loadRuns = async () => {
-      const runs = await api("/api/backup-runs?page=1&pageSize=10");
+      const params = new URLSearchParams({ page: "1", pageSize: "10" });
+      const databaseId = (localStorage.getItem("selected_database") || "").trim();
+      if (databaseId) params.set("database", databaseId);
+      const runs = await api(`/api/backup-runs?${params.toString()}`);
       renderBackupRuns(runsTable, runs.items || []);
     };
 
@@ -321,6 +332,10 @@
     if (triggerButton) {
       triggerButton.addEventListener("click", () => triggerBackup(messageEl, refreshAll));
     }
+
+    window.addEventListener("databasechange", () => {
+      refreshAll().catch(showPageError);
+    });
 
     await refreshAll();
   }

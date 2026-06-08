@@ -404,7 +404,23 @@ func (a *App) handleBackupRunsAPI(w http.ResponseWriter, r *http.Request, user U
 	_ = user
 	page := queryInt(r, "page", 1)
 	pageSize := queryInt(r, "pageSize", 20)
-	items, total, err := a.store.ListBackupRuns(r.Context(), page, pageSize)
+	databaseID := strings.TrimSpace(r.URL.Query().Get("database"))
+	if databaseID == "" {
+		databaseID = strings.TrimSpace(r.URL.Query().Get("database_id"))
+	}
+
+	var (
+		items []store.BackupRun
+		total int64
+		err   error
+	)
+	if databaseID != "" {
+		filter := store.BackupRunFilter{DatabaseID: databaseID}
+		offset := (page - 1) * pageSize
+		items, total, err = a.store.ListBackupRunsWithFilter(r.Context(), filter, pageSize, offset)
+	} else {
+		items, total, err = a.store.ListBackupRuns(r.Context(), page, pageSize)
+	}
 	if err != nil {
 		a.writeAPIError(w, http.StatusInternalServerError, err)
 		return
@@ -458,7 +474,19 @@ func (a *App) handleSaveSettingsAPI(w http.ResponseWriter, r *http.Request, user
 }
 
 func (a *App) handleTriggerBackupAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
-	run, err := a.backups.Trigger(r.Context(), user.Username, "manual")
+	var payload struct {
+		DatabaseID string `json:"database_id"`
+	}
+	// Body is optional in single-database mode. Tolerate empty/invalid bodies.
+	if r.ContentLength > 0 {
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+	}
+	databaseID := strings.TrimSpace(payload.DatabaseID)
+	if databaseID == "" {
+		databaseID = strings.TrimSpace(r.URL.Query().Get("database_id"))
+	}
+
+	run, err := a.backups.Trigger(r.Context(), user.Username, "manual", databaseID)
 	if errors.Is(err, errBackupRunning) {
 		a.writeJSON(w, http.StatusConflict, map[string]any{
 			"message": "A backup is already in progress.",
@@ -467,7 +495,7 @@ func (a *App) handleTriggerBackupAPI(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	if err != nil {
-		a.writeAPIError(w, http.StatusInternalServerError, err)
+		a.writeAPIErrorMessage(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
