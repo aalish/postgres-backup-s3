@@ -52,12 +52,14 @@ type paginatedResponse[T any] struct {
 }
 
 type backupRow struct {
-	Name      string    `json:"name"`
-	Size      int64     `json:"size"`
-	CreatedAt time.Time `json:"createdAt"`
-	S3Path    string    `json:"s3Path"`
-	Key       string    `json:"key"`
-	Status    string    `json:"status"`
+	Name         string    `json:"name"`
+	Size         int64     `json:"size"`
+	CreatedAt    time.Time `json:"createdAt"`
+	S3Path       string    `json:"s3Path"`
+	Key          string    `json:"key"`
+	Status       string    `json:"status"`
+	DatabaseID   string    `json:"databaseId,omitempty"`
+	DatabaseName string    `json:"databaseName,omitempty"`
 }
 
 type overviewResponse struct {
@@ -280,25 +282,12 @@ func (a *App) handleLogsPage(w http.ResponseWriter, r *http.Request, user UserSe
 
 func (a *App) handleRestorePage(w http.ResponseWriter, r *http.Request, user UserSession) {
 	// Get database list for the dropdown
-	databases := a.restore.GetDatabases()
-
-	// Convert to list for template
-	var dbList []map[string]any
-	for id, db := range databases {
+	dbList := []map[string]any{}
+	for id, db := range a.restore.GetDatabases() {
 		dbList = append(dbList, map[string]any{
 			"ID":   id,
 			"Name": db.Name,
 		})
-	}
-
-	// If no multi-db, provide default
-	if len(dbList) == 0 {
-		dbList = []map[string]any{
-			{
-				"ID":   "default",
-				"Name": "Default Database",
-			},
-		}
 	}
 
 	// Render page with database list
@@ -328,30 +317,54 @@ func (a *App) handleRestorePage(w http.ResponseWriter, r *http.Request, user Use
 
 func (a *App) handleOverviewAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
 	_ = user
-	backups, err := a.loadBackups(r.Context(), r.URL.Query().Get("namePrefix"), "", "", "", "createdAt", "desc")
-	if err != nil {
-		a.writeAPIError(w, http.StatusInternalServerError, err)
-		return
+	databaseID := strings.TrimSpace(r.URL.Query().Get("database"))
+	if databaseID == "" {
+		databaseID = strings.TrimSpace(r.URL.Query().Get("database_id"))
 	}
-	latestRun, err := a.store.LatestBackupRun(r.Context())
-	if err != nil {
-		a.writeAPIError(w, http.StatusInternalServerError, err)
-		return
-	}
-	retentionRuns, _, err := a.store.ListRetentionRuns(r.Context(), 1, 1)
+
+	backups, err := a.loadBackups(r.Context(), r.URL.Query().Get("namePrefix"), "", "", "", "createdAt", "desc", databaseID)
 	if err != nil {
 		a.writeAPIError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	resp := overviewResponse{
-		BackupCount:   len(backups),
-		CurrentJob:    a.backups.Current(),
-		LatestRun:     latestRun,
-		RecentBackups: sliceRows(backups, 5),
+	var (
+		latestRun     *store.BackupRun
+		latestRetention *store.RetentionRun
+	)
+	if databaseID != "" {
+		latestRun, err = a.store.GetLatestBackupRunForDatabase(r.Context(), databaseID)
+		if err != nil {
+			a.writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		latestRetention, err = a.store.GetLatestRetentionRunForDatabase(r.Context(), databaseID)
+		if err != nil {
+			a.writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+	} else {
+		latestRun, err = a.store.LatestBackupRun(r.Context())
+		if err != nil {
+			a.writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		retentionRuns, _, rerr := a.store.ListRetentionRuns(r.Context(), 1, 1)
+		if rerr != nil {
+			a.writeAPIError(w, http.StatusInternalServerError, rerr)
+			return
+		}
+		if len(retentionRuns) > 0 {
+			latestRetention = &retentionRuns[0]
+		}
 	}
-	if len(retentionRuns) > 0 {
-		resp.LatestRetention = &retentionRuns[0]
+
+	resp := overviewResponse{
+		BackupCount:     len(backups),
+		CurrentJob:      a.backups.Current(),
+		LatestRun:       latestRun,
+		LatestRetention: latestRetention,
+		RecentBackups:   sliceRows(backups, 5),
 	}
 	a.writeJSON(w, http.StatusOK, resp)
 }
@@ -364,6 +377,10 @@ func (a *App) handleBackupsAPI(w http.ResponseWriter, r *http.Request, user User
 		pageSize = 100
 	}
 
+	databaseID := strings.TrimSpace(r.URL.Query().Get("database"))
+	if databaseID == "" {
+		databaseID = strings.TrimSpace(r.URL.Query().Get("database_id"))
+	}
 	rows, err := a.loadBackups(
 		r.Context(),
 		r.URL.Query().Get("namePrefix"),
@@ -372,6 +389,7 @@ func (a *App) handleBackupsAPI(w http.ResponseWriter, r *http.Request, user User
 		r.URL.Query().Get("to"),
 		r.URL.Query().Get("sort"),
 		r.URL.Query().Get("order"),
+		databaseID,
 	)
 	if err != nil {
 		a.writeAPIError(w, http.StatusInternalServerError, err)
@@ -601,7 +619,9 @@ func (a *App) handleTriggerRestoreAPI(w http.ResponseWriter, r *http.Request, us
 
 	restoreRun, err := a.restore.TriggerRestore(&req, user.Username)
 	if err != nil {
-		a.writeAPIError(w, http.StatusInternalServerError, err)
+		// Validation errors from TriggerRestore (missing/unknown database,
+		// mode mismatch) should surface as 400, not 500.
+		a.writeAPIErrorMessage(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -631,14 +651,11 @@ func (a *App) handleCancelRestoreAPI(w http.ResponseWriter, r *http.Request, use
 
 func (a *App) handleListBackupsAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
 	_ = user
-	databaseID := r.URL.Query().Get("database")
-	if databaseID == "" {
-		databaseID = "default"
-	}
+	databaseID := strings.TrimSpace(r.URL.Query().Get("database"))
 
 	backups, err := a.restore.ListAvailableBackups(databaseID)
 	if err != nil {
-		a.writeAPIError(w, http.StatusInternalServerError, err)
+		a.writeAPIErrorMessage(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -650,11 +667,8 @@ func (a *App) handleListBackupsAPI(w http.ResponseWriter, r *http.Request, user 
 
 func (a *App) handleListDatabasesAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
 	_ = user
-	databases := a.restore.GetDatabases()
-
-	// Convert to list for API response
-	var dbList []map[string]any
-	for id, db := range databases {
+	dbList := []map[string]any{}
+	for id, db := range a.restore.GetDatabases() {
 		dbList = append(dbList, map[string]any{
 			"id":              id,
 			"name":            db.Name,
@@ -670,19 +684,6 @@ func (a *App) handleListDatabasesAPI(w http.ResponseWriter, r *http.Request, use
 			"enabled":         db.Enabled,
 		})
 	}
-
-	// If no multi-db, return default
-	if len(dbList) == 0 {
-		dbList = []map[string]any{
-			{
-				"id":       "default",
-				"name":     "Default Database",
-				"host":     a.cfg.Base.Postgres.Host,
-				"database": a.cfg.Base.Postgres.Database,
-			},
-		}
-	}
-
 	a.writeJSON(w, http.StatusOK, dbList)
 }
 
@@ -776,19 +777,74 @@ func (a *App) writeAPIErrorMessage(w http.ResponseWriter, status int, message st
 	a.writeJSON(w, status, map[string]string{"error": message})
 }
 
-func (a *App) loadBackups(ctx context.Context, namePrefix, statusFilter, fromRaw, toRaw, sortField, sortOrder string) ([]backupRow, error) {
+func (a *App) loadBackups(ctx context.Context, namePrefix, statusFilter, fromRaw, toRaw, sortField, sortOrder, databaseID string) ([]backupRow, error) {
 	settings, err := a.settings.GetActive(ctx)
 	if err != nil {
 		return nil, err
 	}
 	jobCfg := settings.Apply(a.cfg.Base)
+
+	// Build a lookup of s3-prefix → database for classifying rows, and
+	// determine which prefix(es) to list under S3.
+	type dbView struct {
+		ID       string
+		Name     string
+		Prefix   string // normalized, no leading/trailing slashes
+		Retention int   // 0 means inherit from global settings
+	}
+	var dbs []dbView
+	if jobCfg.MultiDatabaseMode {
+		for _, db := range jobCfg.Databases.Databases {
+			if !db.Enabled {
+				continue
+			}
+			dbs = append(dbs, dbView{
+				ID:        db.ID,
+				Name:      db.Name,
+				Prefix:    strings.Trim(db.GetS3Prefix(jobCfg.S3.Prefix), "/"),
+				Retention: db.RetentionDays,
+			})
+		}
+	}
+
 	uploader, err := storage.NewS3Uploader(ctx, jobCfg.S3, jobCfg.Retry, a.logger)
 	if err != nil {
 		return nil, err
 	}
-	objects, err := uploader.ListObjects(ctx)
+
+	var objects []storage.ObjectInfo
+	if dbID := strings.TrimSpace(databaseID); dbID != "" && jobCfg.MultiDatabaseMode {
+		db, gerr := jobCfg.Databases.GetByID(dbID)
+		if gerr != nil {
+			return nil, fmt.Errorf("unknown database_id %q: %w", dbID, gerr)
+		}
+		prefix := strings.Trim(db.GetS3Prefix(jobCfg.S3.Prefix), "/")
+		objects, err = uploader.ListObjectsWithPrefix(ctx, prefix)
+	} else {
+		objects, err = uploader.ListObjects(ctx)
+	}
 	if err != nil {
 		return nil, err
+	}
+
+	classify := func(key string) (string, string, int) {
+		// Longest matching prefix wins so nested prefixes resolve correctly.
+		var bestID, bestName string
+		bestRetention := 0
+		bestLen := -1
+		for _, d := range dbs {
+			if d.Prefix == "" {
+				continue
+			}
+			pfx := d.Prefix + "/"
+			if strings.HasPrefix(key, pfx) && len(d.Prefix) > bestLen {
+				bestID = d.ID
+				bestName = d.Name
+				bestRetention = d.Retention
+				bestLen = len(d.Prefix)
+			}
+		}
+		return bestID, bestName, bestRetention
 	}
 
 	var fromTime, toTime time.Time
@@ -806,10 +862,19 @@ func (a *App) loadBackups(ctx context.Context, namePrefix, statusFilter, fromRaw
 		toTime = toTime.Add(24*time.Hour - time.Nanosecond)
 	}
 
-	cutoff := time.Now().UTC().Add(-time.Duration(settings.RetentionDays) * 24 * time.Hour)
-	warnCutoff := cutoff.Add(24 * time.Hour)
+	now := time.Now().UTC()
 	rows := make([]backupRow, 0, len(objects))
 	for _, object := range objects {
+		dbID, dbName, dbRetention := classify(object.Key)
+
+		// Apply per-DB retention when known, otherwise fall back to global.
+		retention := settings.RetentionDays
+		if dbRetention > 0 {
+			retention = dbRetention
+		}
+		cutoff := now.Add(-time.Duration(retention) * 24 * time.Hour)
+		warnCutoff := cutoff.Add(24 * time.Hour)
+
 		state := "available"
 		switch {
 		case object.LastModified.Before(cutoff):
@@ -832,12 +897,14 @@ func (a *App) loadBackups(ctx context.Context, namePrefix, statusFilter, fromRaw
 		}
 
 		rows = append(rows, backupRow{
-			Name:      object.Filename,
-			Size:      object.Size,
-			CreatedAt: object.LastModified,
-			S3Path:    object.S3URI,
-			Key:       object.Key,
-			Status:    state,
+			Name:         object.Filename,
+			Size:         object.Size,
+			CreatedAt:    object.LastModified,
+			S3Path:       object.S3URI,
+			Key:          object.Key,
+			Status:       state,
+			DatabaseID:   dbID,
+			DatabaseName: dbName,
 		})
 	}
 

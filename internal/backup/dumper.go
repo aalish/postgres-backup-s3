@@ -112,7 +112,17 @@ func (d *Dumper) Validate(ctx context.Context, archive Archive) error {
 }
 
 func (d *Dumper) commandEnv() []string {
-	env := os.Environ()
+	// Strip any inherited PGPASSWORD so the per-database password isn't
+	// shadowed by a global value from the parent process. POSIX getenv
+	// returns the first occurrence, so appending is not sufficient.
+	parent := os.Environ()
+	env := make([]string, 0, len(parent)+1)
+	for _, kv := range parent {
+		if strings.HasPrefix(kv, "PGPASSWORD=") {
+			continue
+		}
+		env = append(env, kv)
+	}
 	if d.pgConfig.Password != "" {
 		env = append(env, "PGPASSWORD="+d.pgConfig.Password)
 	}

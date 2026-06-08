@@ -96,18 +96,11 @@
       return;
     }
     target.innerHTML = items.map((item) => {
-      // Extract database from name (e.g., neelgai_production_2024-01-01)
-      const dbMatch = item.name?.match(/^(neelgai_production|neeldb_development)/);
-      const database = dbMatch ? dbMatch[1] : "default";
-      const dbBadge = database === "neelgai_production"
-        ? '<span class="table-db-badge prod">PROD</span>'
-        : database === "neeldb_development"
-        ? '<span class="table-db-badge dev">DEV</span>'
-        : '<span class="table-db-badge default">DEFAULT</span>';
-
+      const badge = classifyDatabaseBadge(item);
+      const dbLabel = item.databaseName || item.databaseId || "—";
       return `
       <tr>
-        <td>${dbBadge} ${database === "neelgai_production" ? "Neelgai" : database === "neeldb_development" ? "Neeldb" : "Default"}</td>
+        <td><span class="table-db-badge ${badge.cls}">${badge.label}</span> ${escapeHTML(dbLabel)}</td>
         <td>${escapeHTML(item.name)}</td>
         <td>${escapeHTML(formatBytes(item.size))}</td>
         <td>${escapeHTML(formatTime(item.createdAt))}</td>
@@ -223,7 +216,11 @@
     const triggerButton = document.querySelector('[data-action="trigger-backup"]');
 
     const refresh = async () => {
-      const overview = await api("/api/overview");
+      const databaseId = (localStorage.getItem("selected_database") || "").trim();
+      const params = new URLSearchParams();
+      if (databaseId) params.set("database", databaseId);
+      const overviewUrl = params.toString() ? `/api/overview?${params}` : "/api/overview";
+      const overview = await api(overviewUrl);
       stats.innerHTML = `
         <div class="stat-card">
           <h3>Total Backups</h3>
@@ -270,6 +267,10 @@
       triggerButton.addEventListener("click", () => triggerBackup(messageEl, refresh));
     }
 
+    window.addEventListener("databasechange", () => {
+      refresh().catch((err) => showMessage(messageEl, "error", err.message));
+    });
+
     let overview = await refresh();
     if (overview.currentJob) {
       const timer = setInterval(async () => {
@@ -298,6 +299,8 @@
       for (const [key, value] of formData.entries()) {
         if (value) params.set(key, value);
       }
+      const databaseId = (localStorage.getItem("selected_database") || "").trim();
+      if (databaseId) params.set("database", databaseId);
       const backups = await api(`/api/backups?${params.toString()}`);
       renderBackupsRows(backupsTable, backups.items || []);
       renderPagination(pagination, backups.page, backups.totalPages, (pageNumber) => {

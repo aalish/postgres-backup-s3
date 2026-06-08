@@ -288,9 +288,30 @@ func (r *Restorer) buildRestoreArgs(options RestoreOptions) []string {
 	return args
 }
 
+// inheritedEnvWithout returns os.Environ() with the given variable names
+// removed. We strip vars before re-setting them so that POSIX getenv (which
+// returns the FIRST match) sees the value we intend, not an inherited shadow.
+func inheritedEnvWithout(strip ...string) []string {
+	parent := os.Environ()
+	out := make([]string, 0, len(parent))
+	for _, kv := range parent {
+		drop := false
+		for _, name := range strip {
+			if strings.HasPrefix(kv, name+"=") {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // buildEnvironment builds the environment variables for pg_restore
 func (r *Restorer) buildEnvironment() []string {
-	env := os.Environ()
+	env := inheritedEnvWithout("PGPASSWORD")
 	if r.postgresConfig.Password != "" {
 		env = append(env, fmt.Sprintf("PGPASSWORD=%s", r.postgresConfig.Password))
 	}
@@ -299,11 +320,14 @@ func (r *Restorer) buildEnvironment() []string {
 
 // buildRestoreEnvironment builds environment variables for restore with target database
 func (r *Restorer) buildRestoreEnvironment(targetDB string) []string {
-	env := os.Environ()
+	strip := []string{"PGPASSWORD"}
+	if targetDB != "" && targetDB != r.postgresConfig.Database {
+		strip = append(strip, "PGDATABASE")
+	}
+	env := inheritedEnvWithout(strip...)
 	if r.postgresConfig.Password != "" {
 		env = append(env, fmt.Sprintf("PGPASSWORD=%s", r.postgresConfig.Password))
 	}
-	// Override database name if different from config
 	if targetDB != "" && targetDB != r.postgresConfig.Database {
 		env = append(env, fmt.Sprintf("PGDATABASE=%s", targetDB))
 	}

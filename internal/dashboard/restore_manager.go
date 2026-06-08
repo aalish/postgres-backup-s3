@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,23 +106,29 @@ func (rm *RestoreManager) TriggerRestore(req *RestoreRequest, triggeredBy string
 	var s3Prefix string
 	var filenamePrefix string
 
-	// Check if we're in multi-DB mode and have a specific database
-	if rm.multiDBMode && req.DatabaseID != "" {
-		if db, ok := rm.databases[req.DatabaseID]; ok {
-			dbConfig = db
-			s3Prefix = db.S3Prefix
-			filenamePrefix = db.FilenamePrefix
-			rm.logger.Info("Using multi-DB config for restore",
-				"database_id", req.DatabaseID,
-				"s3_prefix", s3Prefix,
-				"filename_prefix", filenamePrefix)
-		} else {
-			return nil, fmt.Errorf("database configuration not found: %s", req.DatabaseID)
+	if rm.multiDBMode {
+		if req.DatabaseID == "" {
+			return nil, fmt.Errorf("database_id is required in multi-database mode")
 		}
+		db, ok := rm.databases[req.DatabaseID]
+		if !ok {
+			return nil, fmt.Errorf("unknown database_id %q", req.DatabaseID)
+		}
+		if !db.Enabled {
+			return nil, fmt.Errorf("database %q is disabled", req.DatabaseID)
+		}
+		dbConfig = db
+		s3Prefix = strings.Trim(db.GetS3Prefix(rm.base.S3.Prefix), "/")
+		filenamePrefix = db.GetFilenamePrefix()
+		rm.logger.Info("using multi-db config for restore",
+			"database_id", req.DatabaseID,
+			"s3_prefix", s3Prefix,
+			"filename_prefix", filenamePrefix)
 	} else {
-		// Fall back to single-db mode config
+		if req.DatabaseID != "" {
+			return nil, fmt.Errorf("multi-database mode is not enabled; remove database_id")
+		}
 		dbConfig = config.DatabaseConfig{
-			ID:       "default",
 			Host:     rm.base.Postgres.Host,
 			Port:     rm.base.Postgres.Port,
 			User:     rm.base.Postgres.Username,
@@ -134,7 +141,7 @@ func (rm *RestoreManager) TriggerRestore(req *RestoreRequest, triggeredBy string
 
 	// Create restore run record
 	restoreRun := store.RestoreRun{
-		ID:             fmt.Sprintf("restore_%s_%d", req.DatabaseID, time.Now().Unix()),
+		ID:             store.NewID(),
 		DatabaseID:     req.DatabaseID,
 		TargetDatabase: req.TargetDatabase,
 		SourceBackupID: req.SourceBackupID,
@@ -391,14 +398,19 @@ func (rm *RestoreManager) Wait(ctx context.Context) error {
 func (rm *RestoreManager) ListAvailableBackups(databaseID string) ([]map[string]interface{}, error) {
 	var s3Prefix string
 
-	// Get the correct S3 prefix for the database
-	if rm.multiDBMode && databaseID != "" {
-		if db, ok := rm.databases[databaseID]; ok {
-			s3Prefix = db.S3Prefix
-		} else {
-			return nil, fmt.Errorf("database configuration not found: %s", databaseID)
+	if rm.multiDBMode {
+		if databaseID == "" {
+			return nil, fmt.Errorf("database_id is required in multi-database mode")
 		}
+		db, ok := rm.databases[databaseID]
+		if !ok {
+			return nil, fmt.Errorf("unknown database_id %q", databaseID)
+		}
+		s3Prefix = strings.Trim(db.GetS3Prefix(rm.base.S3.Prefix), "/")
 	} else {
+		if databaseID != "" {
+			return nil, fmt.Errorf("multi-database mode is not enabled; remove database_id")
+		}
 		s3Prefix = rm.base.S3.Prefix
 	}
 

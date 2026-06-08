@@ -503,6 +503,12 @@
             dbSelector.value = savedDb;
             updateIndicator(savedDb);
           }
+          // Notify listening pages that the DB list (and any restored
+          // selection) is now available. This lets the initial page render
+          // use the same filter as a manual selector change would.
+          window.dispatchEvent(new CustomEvent('databasechange', {
+            detail: { databaseId: savedDb || '' }
+          }));
         })
         .catch(() => { /* no-op: leave selector empty */ });
 

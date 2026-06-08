@@ -294,6 +294,23 @@ func (s *Store) DeleteDatabase(ctx context.Context, id string) error {
 
 // Retention Run Methods with Database Support
 
+// GetLatestRetentionRunForDatabase returns the most recent retention run for
+// the given database, or (nil, nil) if no record exists yet.
+func (s *Store) GetLatestRetentionRunForDatabase(ctx context.Context, databaseID string) (*RetentionRun, error) {
+	filter := bson.M{"database_id": databaseID}
+	opts := options.FindOne().SetSort(bson.D{{"started_at", -1}})
+
+	var run RetentionRun
+	err := s.db.Collection("retention_runs").FindOne(ctx, filter, opts).Decode(&run)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find latest retention run: %w", err)
+	}
+	return &run, nil
+}
+
 // ListRetentionRunsForDatabase retrieves retention runs for a specific database
 func (s *Store) ListRetentionRunsForDatabase(ctx context.Context, databaseID string, limit, offset int) ([]RetentionRun, error) {
 	collection := s.db.Collection("retention_runs")

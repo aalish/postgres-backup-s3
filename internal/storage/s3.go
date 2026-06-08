@@ -170,11 +170,18 @@ func (u *S3Uploader) verifyUpload(ctx context.Context, key string, expectedSize 
 }
 
 func (u *S3Uploader) ListObjects(ctx context.Context) ([]ObjectInfo, error) {
+	return u.ListObjectsWithPrefix(ctx, u.prefix)
+}
+
+// ListObjectsWithPrefix lists objects under an explicit prefix (overrides the
+// uploader's default prefix). Pass an empty string to list everything in the
+// bucket.
+func (u *S3Uploader) ListObjectsWithPrefix(ctx context.Context, prefix string) ([]ObjectInfo, error) {
 	var objects []ObjectInfo
 	input := &s3.ListObjectsV2Input{
 		Bucket: aws.String(u.bucket),
 	}
-	if cleanPrefix := strings.Trim(strings.TrimSpace(u.prefix), "/"); cleanPrefix != "" {
+	if cleanPrefix := strings.Trim(strings.TrimSpace(prefix), "/"); cleanPrefix != "" {
 		input.Prefix = aws.String(cleanPrefix + "/")
 	}
 

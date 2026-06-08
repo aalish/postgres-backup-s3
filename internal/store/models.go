@@ -41,16 +41,17 @@ type BackupRun struct {
 }
 
 type RetentionRun struct {
-	ID          string     `bson:"_id" json:"id"`
-	DatabaseID  string     `bson:"database_id,omitempty" json:"databaseId,omitempty"`
-	Trigger     string     `bson:"trigger" json:"trigger"`
-	Status      string     `bson:"status" json:"status"`
-	Evaluated   int        `bson:"evaluated" json:"evaluated"`
-	Deleted     int        `bson:"deleted" json:"deleted"`
-	DeletedKeys []string   `bson:"deleted_keys,omitempty" json:"deletedKeys,omitempty"`
-	Error       string     `bson:"error,omitempty" json:"error,omitempty"`
-	StartedAt   time.Time  `bson:"started_at" json:"startedAt"`
-	FinishedAt  *time.Time `bson:"finished_at,omitempty" json:"finishedAt,omitempty"`
+	ID           string     `bson:"_id" json:"id"`
+	DatabaseID   string     `bson:"database_id,omitempty" json:"databaseId,omitempty"`
+	DatabaseName string     `bson:"database_name,omitempty" json:"databaseName,omitempty"`
+	Trigger      string     `bson:"trigger" json:"trigger"`
+	Status       string     `bson:"status" json:"status"`
+	Evaluated    int        `bson:"evaluated" json:"evaluated"`
+	Deleted      int        `bson:"deleted" json:"deleted"`
+	DeletedKeys  []string   `bson:"deleted_keys,omitempty" json:"deletedKeys,omitempty"`
+	Error        string     `bson:"error,omitempty" json:"error,omitempty"`
+	StartedAt    time.Time  `bson:"started_at" json:"startedAt"`
+	FinishedAt   *time.Time `bson:"finished_at,omitempty" json:"finishedAt,omitempty"`
 }
 
 // RestoreRun represents a restore job execution

@@ -43,9 +43,10 @@ type BackupManager struct {
 	notifier    *WebhookNotifier
 	recordAudit auditRecorder
 
-	mu      sync.RWMutex
-	current *store.BackupRun
-	wg      sync.WaitGroup
+	mu       sync.RWMutex
+	current  *store.BackupRun
+	wg       sync.WaitGroup
+	doneChs  map[string]chan struct{} // per-run completion signal
 }
 
 type RetentionManager struct {
@@ -170,6 +171,23 @@ func NewBackupManager(base config.Config, settings *SettingsService, store *stor
 		logger:      logger,
 		notifier:    notifier,
 		recordAudit: recorder,
+		doneChs:     make(map[string]chan struct{}),
+	}
+}
+
+// WaitForRun blocks until the backup with the given run ID has finished, or
+// the context is cancelled. It is safe to call after Trigger() returns.
+// Returns immediately if the run is unknown (already finished or never queued).
+func (m *BackupManager) WaitForRun(ctx context.Context, runID string) {
+	m.mu.RLock()
+	ch, ok := m.doneChs[runID]
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+	select {
+	case <-ch:
+	case <-ctx.Done():
 	}
 }
 
@@ -223,8 +241,13 @@ func (m *BackupManager) Trigger(ctx context.Context, actor, source, databaseID s
 	}
 
 	m.current = &run
+	done := make(chan struct{})
+	if m.doneChs == nil {
+		m.doneChs = make(map[string]chan struct{})
+	}
+	m.doneChs[run.ID] = done
 	m.wg.Add(1)
-	go m.execute(run, settings)
+	go m.execute(run, settings, done)
 
 	m.logger.Info("backup job queued", "run_id", run.ID, "database_id", databaseID, "triggered_by", actor, "trigger_source", source)
 	if m.recordAudit != nil {
@@ -238,8 +261,9 @@ func (m *BackupManager) Trigger(ctx context.Context, actor, source, databaseID s
 	return run, nil
 }
 
-func (m *BackupManager) execute(run store.BackupRun, settings runtimecfg.Settings) {
+func (m *BackupManager) execute(run store.BackupRun, settings runtimecfg.Settings, done chan struct{}) {
 	defer m.wg.Done()
+	defer close(done)
 
 	finishedAt := time.Now().UTC()
 	defer func() {
@@ -247,33 +271,38 @@ func (m *BackupManager) execute(run store.BackupRun, settings runtimecfg.Setting
 		if m.current != nil && m.current.ID == run.ID {
 			m.current = nil
 		}
+		delete(m.doneChs, run.ID)
 		m.mu.Unlock()
 	}()
 
 	jobCfg := settings.Apply(m.base)
 	var err error
 	if run.DatabaseID != "" {
-		multiSvc, mErr := service.NewMultiDatabaseService(context.Background(), jobCfg, m.logger)
-		if mErr != nil {
-			err = mErr
+		// Re-validate the database still exists at execute time. The config
+		// is normally immutable for the lifetime of the process, but if it
+		// were ever reloaded we don't want to silently fall through to an
+		// empty S3 prefix that would write to the bucket root.
+		db, lookupErr := jobCfg.Databases.GetByID(run.DatabaseID)
+		if lookupErr != nil || db == nil {
+			err = fmt.Errorf("database %q no longer configured", run.DatabaseID)
 		} else {
-			result, bErr := multiSvc.BackupSpecificDatabase(context.Background(), run.DatabaseID)
-			if bErr != nil {
-				err = bErr
-			} else if result.Error != nil {
-				err = result.Error
+			multiSvc, mErr := service.NewMultiDatabaseService(context.Background(), jobCfg, m.logger)
+			if mErr != nil {
+				err = mErr
 			} else {
-				db, _ := jobCfg.Databases.GetByID(run.DatabaseID)
-				s3Prefix := ""
-				if db != nil {
-					s3Prefix = db.GetS3Prefix(jobCfg.S3.Prefix)
+				result, bErr := multiSvc.BackupSpecificDatabase(context.Background(), run.DatabaseID)
+				if bErr != nil {
+					err = bErr
+				} else if result.Error != nil {
+					err = result.Error
+				} else {
+					run.Status = "succeeded"
+					run.ArchiveFilename = result.ArchiveFilename
+					run.ArchivePath = result.ArchivePath
+					run.S3URI = result.S3URI
+					run.S3Key = storage.BuildObjectKey(db.GetS3Prefix(jobCfg.S3.Prefix), result.ArchiveFilename)
+					run.SizeBytes = result.ArchiveSize
 				}
-				run.Status = "succeeded"
-				run.ArchiveFilename = result.ArchiveFilename
-				run.ArchivePath = result.ArchivePath
-				run.S3URI = result.S3URI
-				run.S3Key = storage.BuildObjectKey(s3Prefix, result.ArchiveFilename)
-				run.SizeBytes = result.ArchiveSize
 			}
 		}
 	} else {
@@ -361,7 +390,12 @@ func NewRetentionManager(base config.Config, settings *SettingsService, store *s
 	}
 }
 
-func (m *RetentionManager) Run(ctx context.Context, trigger, actor string) (*store.RetentionRun, error) {
+// Run executes a retention sweep. In multi-database mode, databaseID is
+// required and scopes the sweep to that database's S3 prefix using its own
+// retention_days (with fallback to the global setting). In single-database
+// mode, databaseID must be empty and the global prefix + global retention are
+// used.
+func (m *RetentionManager) Run(ctx context.Context, trigger, actor, databaseID string) (*store.RetentionRun, error) {
 	m.mu.Lock()
 	if m.running {
 		m.mu.Unlock()
@@ -381,26 +415,57 @@ func (m *RetentionManager) Run(ctx context.Context, trigger, actor string) (*sto
 	if err != nil {
 		return nil, err
 	}
+	jobCfg := settings.Apply(m.base)
+
+	var (
+		listPrefix    string
+		databaseName  string
+		retentionDays = settings.RetentionDays
+	)
+	if jobCfg.MultiDatabaseMode {
+		if databaseID == "" {
+			return nil, fmt.Errorf("database_id is required in multi-database mode")
+		}
+		db, gerr := jobCfg.Databases.GetByID(databaseID)
+		if gerr != nil {
+			return nil, fmt.Errorf("unknown database_id %q: %w", databaseID, gerr)
+		}
+		if !db.Enabled {
+			return nil, fmt.Errorf("database %q is disabled", databaseID)
+		}
+		databaseName = db.Name
+		listPrefix = strings.Trim(db.GetS3Prefix(jobCfg.S3.Prefix), "/")
+		if db.RetentionDays > 0 {
+			retentionDays = db.RetentionDays
+		}
+	} else if databaseID != "" {
+		return nil, fmt.Errorf("multi-database mode is not enabled; remove database_id")
+	}
 
 	startedAt := time.Now().UTC()
 	run := store.RetentionRun{
-		ID:        store.NewID(),
-		Trigger:   trigger,
-		Status:    "running",
-		StartedAt: startedAt,
+		ID:           store.NewID(),
+		DatabaseID:   databaseID,
+		DatabaseName: databaseName,
+		Trigger:      trigger,
+		Status:       "running",
+		StartedAt:    startedAt,
 	}
 	if err := m.store.InsertRetentionRun(ctx, run); err != nil {
 		return nil, err
 	}
 
-	jobCfg := settings.Apply(m.base)
 	uploader, err := storage.NewS3Uploader(ctx, jobCfg.S3, jobCfg.Retry, m.logger)
 	if err == nil {
 		var objects []storage.ObjectInfo
-		objects, err = uploader.ListObjects(ctx)
+		if jobCfg.MultiDatabaseMode {
+			objects, err = uploader.ListObjectsWithPrefix(ctx, listPrefix)
+		} else {
+			objects, err = uploader.ListObjects(ctx)
+		}
 		if err == nil {
 			run.Evaluated = len(objects)
-			cutoff := time.Now().UTC().Add(-time.Duration(settings.RetentionDays) * 24 * time.Hour)
+			cutoff := time.Now().UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 			for _, object := range objects {
 				if object.LastModified.After(cutoff) {
 					continue
@@ -411,9 +476,10 @@ func (m *RetentionManager) Run(ctx context.Context, trigger, actor string) (*sto
 				}
 				run.Deleted++
 				run.DeletedKeys = append(run.DeletedKeys, object.Key)
-				m.logger.Info("retention deleted expired backup", "key", object.Key, "last_modified", object.LastModified.Format(time.RFC3339))
+				m.logger.Info("retention deleted expired backup", "database_id", databaseID, "key", object.Key, "last_modified", object.LastModified.Format(time.RFC3339))
 				if m.recordAudit != nil {
 					m.recordAudit(context.Background(), "retention.deleted_object", actor, "Deleted expired backup from S3", map[string]any{
+						"databaseId":   databaseID,
 						"key":          object.Key,
 						"lastModified": object.LastModified.Format(time.RFC3339),
 					})
@@ -427,24 +493,27 @@ func (m *RetentionManager) Run(ctx context.Context, trigger, actor string) (*sto
 	if err != nil {
 		run.Status = "failed"
 		run.Error = err.Error()
-		m.logger.Error("retention job failed", "run_id", run.ID, "trigger", trigger, "error", err)
+		m.logger.Error("retention job failed", "run_id", run.ID, "database_id", databaseID, "trigger", trigger, "error", err)
 		if m.recordAudit != nil {
 			m.recordAudit(context.Background(), "retention.failed", actor, "Retention job failed", map[string]any{
-				"runId": run.ID,
-				"error": err.Error(),
+				"runId":      run.ID,
+				"databaseId": databaseID,
+				"error":      err.Error(),
 			})
 		}
 		m.notifier.NotifyFailure(context.Background(), settings, "retention.failed", actor, "Retention job failed", map[string]any{
-			"runId": run.ID,
-			"error": err.Error(),
+			"runId":      run.ID,
+			"databaseId": databaseID,
+			"error":      err.Error(),
 		})
 	} else {
 		run.Status = "succeeded"
 		if m.recordAudit != nil {
 			m.recordAudit(context.Background(), "retention.succeeded", actor, "Retention job completed", map[string]any{
-				"runId":     run.ID,
-				"evaluated": run.Evaluated,
-				"deleted":   run.Deleted,
+				"runId":      run.ID,
+				"databaseId": databaseID,
+				"evaluated":  run.Evaluated,
+				"deleted":    run.Deleted,
 			})
 		}
 	}
@@ -540,7 +609,7 @@ func (s *Scheduler) scheduleBackupLocked(settings runtimecfg.Settings) error {
 			}
 		}
 		for _, dbID := range targets {
-			_, triggerErr := s.backups.Trigger(context.Background(), "scheduler", "scheduled", dbID)
+			run, triggerErr := s.backups.Trigger(context.Background(), "scheduler", "scheduled", dbID)
 			if triggerErr != nil {
 				if errors.Is(triggerErr, errBackupRunning) {
 					s.logger.Warn("scheduled backup skipped because another backup is running", "database_id", dbID)
@@ -560,9 +629,10 @@ func (s *Scheduler) scheduleBackupLocked(settings runtimecfg.Settings) error {
 				}
 				continue
 			}
-			// Wait for the in-flight backup to finish before queuing the next
-			// so we don't trip the BackupManager singleton lock.
-			s.backups.wg.Wait()
+			// Wait specifically for THIS run so the next iteration can acquire
+			// the BackupManager singleton lock cleanly. Don't use wg.Wait()
+			// because that would also block on unrelated manual backups.
+			s.backups.WaitForRun(context.Background(), run.ID)
 		}
 	})
 	if err != nil {
@@ -590,8 +660,19 @@ func (s *Scheduler) retentionLoop() {
 }
 
 func (s *Scheduler) runRetention(trigger, actor string) {
-	if _, err := s.retention.Run(context.Background(), trigger, actor); err != nil {
-		s.logger.Error("retention run failed", "trigger", trigger, "error", err)
+	targets := []string{""}
+	if s.retention.base.MultiDatabaseMode {
+		targets = targets[:0]
+		for _, db := range s.retention.base.Databases.Databases {
+			if db.Enabled {
+				targets = append(targets, db.ID)
+			}
+		}
+	}
+	for _, dbID := range targets {
+		if _, err := s.retention.Run(context.Background(), trigger, actor, dbID); err != nil {
+			s.logger.Error("retention run failed", "trigger", trigger, "database_id", dbID, "error", err)
+		}
 	}
 }
 
