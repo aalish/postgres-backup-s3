@@ -92,35 +92,57 @@
   function renderBackupsRows(target, items) {
     if (!target) return;
     if (!items.length) {
-      target.innerHTML = `<tr><td colspan="5" class="muted">No backups matched the current filters.</td></tr>`;
+      target.innerHTML = `<tr><td colspan="6" class="muted">No backups matched the current filters.</td></tr>`;
       return;
     }
-    target.innerHTML = items.map((item) => `
+    target.innerHTML = items.map((item) => {
+      // Extract database from name (e.g., neelgai_production_2024-01-01)
+      const dbMatch = item.name?.match(/^(neelgai_production|neeldb_development)/);
+      const database = dbMatch ? dbMatch[1] : "default";
+      const dbBadge = database === "neelgai_production"
+        ? '<span class="table-db-badge prod">PROD</span>'
+        : database === "neeldb_development"
+        ? '<span class="table-db-badge dev">DEV</span>'
+        : '<span class="table-db-badge default">DEFAULT</span>';
+
+      return `
       <tr>
+        <td>${dbBadge} ${database === "neelgai_production" ? "Neelgai" : database === "neeldb_development" ? "Neeldb" : "Default"}</td>
         <td>${escapeHTML(item.name)}</td>
         <td>${escapeHTML(formatBytes(item.size))}</td>
         <td>${escapeHTML(formatTime(item.createdAt))}</td>
         <td class="mono">${escapeHTML(item.s3Path)}</td>
         <td>${createStatusBadge(item.status)}</td>
       </tr>
-    `).join("");
+    `}).join("");
   }
 
   function renderBackupRuns(target, items) {
     if (!target) return;
     if (!items.length) {
-      target.innerHTML = `<tr><td colspan="5" class="muted">No backup runs have been recorded yet.</td></tr>`;
+      target.innerHTML = `<tr><td colspan="6" class="muted">No backup runs have been recorded yet.</td></tr>`;
       return;
     }
-    target.innerHTML = items.map((item) => `
+    target.innerHTML = items.map((item) => {
+      // Extract database from s3URI or backup metadata
+      const dbMatch = item.s3URI?.match(/\/(neelgai_production|neeldb_development)[_\/]/);
+      const database = dbMatch ? dbMatch[1] : item.database || "default";
+      const dbBadge = database === "neelgai_production"
+        ? '<span class="table-db-badge prod">PROD</span>'
+        : database === "neeldb_development"
+        ? '<span class="table-db-badge dev">DEV</span>'
+        : '<span class="table-db-badge default">DEFAULT</span>';
+
+      return `
       <tr>
+        <td>${dbBadge} ${database === "neelgai_production" ? "Neelgai" : database === "neeldb_development" ? "Neeldb" : "Default"}</td>
         <td>${escapeHTML(formatTime(item.startedAt))}</td>
         <td>${escapeHTML(item.triggeredBy)}</td>
         <td>${escapeHTML(item.triggerSource)}</td>
         <td>${createStatusBadge(item.status)}</td>
         <td class="mono">${escapeHTML(item.s3URI || "—")}</td>
       </tr>
-    `).join("");
+    `}).join("");
   }
 
   function renderRetentionRuns(target, items) {

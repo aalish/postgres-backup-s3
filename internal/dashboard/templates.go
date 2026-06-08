@@ -18,7 +18,7 @@ type Templates struct {
 
 func LoadTemplates(version string) (*Templates, error) {
 	pages := make(map[string]*template.Template)
-	pageNames := []string{"login", "dashboard", "backups", "settings", "logs"}
+	pageNames := []string{"login", "dashboard", "backups", "restore", "settings", "logs"}
 
 	for _, name := range pageNames {
 		tmpl, err := template.ParseFS(

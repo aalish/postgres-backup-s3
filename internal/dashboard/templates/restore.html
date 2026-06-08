@@ -1,0 +1,600 @@
+{{define "content"}}
+<section class="restore-page">
+  <h1 class="page-title">Database Restore</h1>
+
+  <!-- Restore Form -->
+  <div class="panel">
+    <div class="panel-header">
+      <h2 class="panel-title">Create New Restore</h2>
+    </div>
+    <div class="panel-body">
+      <form id="restore-form" class="restore-form">
+        <div class="form-grid">
+          <!-- Source Selection -->
+          <div class="form-group">
+            <label for="source-database">Source Database</label>
+            <select id="source-database" name="database_id" class="form-control" required>
+              <option value="">Select a database...</option>
+              {{range .Databases}}
+              <option value="{{.ID}}">{{.Name}}</option>
+              {{end}}
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="backup-selector">Backup to Restore</label>
+            <select id="backup-selector" name="backup_key" class="form-control" required disabled>
+              <option value="">First select a database...</option>
+            </select>
+            <div class="form-help">Select the backup file to restore from</div>
+          </div>
+
+          <!-- Target Configuration -->
+          <div class="form-group">
+            <label for="target-database">Target Database Name</label>
+            <input type="text" id="target-database" name="target_database"
+                   class="form-control" required
+                   placeholder="e.g., restored_database">
+            <div class="form-help">Name of the database to restore into</div>
+          </div>
+
+          <!-- Restore Options -->
+          <div class="form-section">
+            <h3>Restore Options</h3>
+
+            <div class="checkbox-group">
+              <label class="checkbox-label">
+                <input type="checkbox" name="clean" value="true">
+                <span>Clean (drop objects before recreating)</span>
+              </label>
+
+              <label class="checkbox-label">
+                <input type="checkbox" name="create_db" value="true">
+                <span>Create Database (create the target database)</span>
+              </label>
+
+              <label class="checkbox-label">
+                <input type="checkbox" name="data_only" value="true"
+                       onchange="toggleSchemaData(this)">
+                <span>Data Only (restore only data, not schema)</span>
+              </label>
+
+              <label class="checkbox-label">
+                <input type="checkbox" name="schema_only" value="true"
+                       onchange="toggleSchemaData(this)">
+                <span>Schema Only (restore only schema, not data)</span>
+              </label>
+
+              <label class="checkbox-label">
+                <input type="checkbox" name="no_owner" value="true">
+                <span>No Owner (skip restoration of object ownership)</span>
+              </label>
+
+              <label class="checkbox-label">
+                <input type="checkbox" name="no_privileges" value="true">
+                <span>No Privileges (skip restoration of access privileges)</span>
+              </label>
+
+              <label class="checkbox-label">
+                <input type="checkbox" name="if_exists" value="true">
+                <span>If Exists (use IF EXISTS when dropping objects)</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Selective Restore -->
+          <div class="form-section">
+            <h3>Selective Restore (Optional)</h3>
+
+            <div class="form-group">
+              <label for="schemas">Schemas (comma-separated)</label>
+              <input type="text" id="schemas" name="schemas"
+                     class="form-control"
+                     placeholder="e.g., public, app_schema">
+              <div class="form-help">Leave empty to restore all schemas</div>
+            </div>
+
+            <div class="form-group">
+              <label for="tables">Tables (comma-separated)</label>
+              <input type="text" id="tables" name="tables"
+                     class="form-control"
+                     placeholder="e.g., users, products, orders">
+              <div class="form-help">Leave empty to restore all tables</div>
+            </div>
+          </div>
+
+          <!-- Performance Options -->
+          <div class="form-group">
+            <label for="jobs">Parallel Jobs</label>
+            <input type="number" id="jobs" name="jobs"
+                   class="form-control" min="1" max="16" value="1">
+            <div class="form-help">Number of parallel jobs for restore (1-16)</div>
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary btn-lg">
+            Start Restore
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="resetRestoreForm()">
+            Reset
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Active Restore Jobs -->
+  <div class="panel">
+    <div class="panel-header">
+      <h2 class="panel-title">Active Restore Operations</h2>
+    </div>
+    <div class="panel-body">
+      <div id="active-restores-list" class="jobs-list">
+        <div class="no-data">No active restore operations</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Restore History -->
+  <div class="panel">
+    <div class="panel-header">
+      <h2 class="panel-title">Restore History</h2>
+      <div class="panel-controls">
+        <select id="history-database-filter" class="form-select">
+          <option value="">All Databases</option>
+          {{range .Databases}}
+          <option value="{{.ID}}">{{.Name}}</option>
+          {{end}}
+        </select>
+        <select id="history-status-filter" class="form-select">
+          <option value="">All Status</option>
+          <option value="success">Success</option>
+          <option value="failed">Failed</option>
+          <option value="running">Running</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </div>
+    </div>
+    <div class="panel-body">
+      <div class="table-container">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Database</th>
+              <th>Source Backup</th>
+              <th>Target Database</th>
+              <th>Started</th>
+              <th>Duration</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="restore-history-table">
+            <tr>
+              <td colspan="8" class="loading">Loading restore history...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination -->
+      <div id="restore-history-pagination" class="pagination"></div>
+    </div>
+  </div>
+</section>
+
+<!-- Restore Details Modal -->
+<div id="restore-details-modal" class="modal" style="display: none;">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>Restore Details</h2>
+      <button class="modal-close" onclick="closeRestoreDetails()">&times;</button>
+    </div>
+    <div class="modal-body" id="restore-details-content">
+      <!-- Details will be loaded here -->
+    </div>
+  </div>
+</div>
+
+<script>
+// API helper function
+async function api(url, options = {}) {
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+
+  const defaultOptions = {
+    headers: {
+      'X-CSRF-Token': csrfToken || '',
+      'Accept': 'application/json',
+    },
+    credentials: 'same-origin'
+  };
+
+  if (options.body && !(options.body instanceof FormData)) {
+    defaultOptions.headers['Content-Type'] = 'application/json';
+    options.body = JSON.stringify(options.body);
+  }
+
+  return fetch(url, {...defaultOptions, ...options});
+}
+
+// Format bytes to human readable
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+// Show message to user
+function showMessage(message, type = 'info') {
+  // Create a simple alert for now, can be replaced with better UI later
+  const alertClass = type === 'error' ? 'alert-danger' : type === 'success' ? 'alert-success' : 'alert-info';
+  const alertDiv = document.createElement('div');
+  alertDiv.className = `alert ${alertClass}`;
+  alertDiv.style.cssText = 'position:fixed;top:20px;right:20px;padding:15px;border-radius:5px;z-index:9999;';
+  alertDiv.textContent = message;
+
+  document.body.appendChild(alertDiv);
+  setTimeout(() => alertDiv.remove(), 5000);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  initializeRestorePage();
+
+  // Load active restores and history
+  loadActiveRestores();
+  loadRestoreHistory();
+
+  // Refresh every 5 seconds
+  setInterval(() => {
+    loadActiveRestores();
+    loadRestoreHistory();
+  }, 5000);
+});
+
+function initializeRestorePage() {
+  // Handle database selection change
+  document.getElementById('source-database').addEventListener('change', async function(e) {
+    const databaseId = e.target.value;
+    await loadBackupsForDatabase(databaseId);
+  });
+
+  // Handle restore form submission
+  document.getElementById('restore-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    await submitRestore();
+  });
+
+  // Handle filters
+  document.getElementById('history-database-filter').addEventListener('change', loadRestoreHistory);
+  document.getElementById('history-status-filter').addEventListener('change', loadRestoreHistory);
+
+  // Check if we have pre-selected values from URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const databaseId = urlParams.get('database_id');
+  const backupKey = urlParams.get('backup_key');
+
+  if (databaseId) {
+    document.getElementById('source-database').value = databaseId;
+    loadBackupsForDatabase(databaseId, backupKey);
+  }
+}
+
+async function loadBackupsForDatabase(databaseId, preselectedKey) {
+  const selector = document.getElementById('backup-selector');
+
+  if (!databaseId) {
+    selector.disabled = true;
+    selector.innerHTML = '<option value="">First select a database...</option>';
+    return;
+  }
+
+  selector.disabled = true;
+  selector.innerHTML = '<option value="">Loading backups...</option>';
+
+  try {
+    console.log(`Loading backups for database: ${databaseId}`);
+    const response = await api(`/api/restore/backups?database=${databaseId}`);
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log('Backup response:', data);
+
+    if (data.backups && data.backups.length > 0) {
+      selector.innerHTML = '<option value="">Select a backup...</option>' +
+        data.backups.map(backup => {
+          const date = new Date(backup.modified).toLocaleString();
+          const size = formatBytes(backup.size);
+          const selected = backup.key === preselectedKey ? 'selected' : '';
+          // Extract filename from key (last part after /)
+          const filename = backup.key.split('/').pop();
+          return `<option value="${backup.key}" ${selected}>
+            ${filename} (${size}, ${date})
+          </option>`;
+        }).join('');
+      selector.disabled = false;
+      console.log(`Loaded ${data.backups.length} backups`);
+    } else {
+      selector.innerHTML = '<option value="">No backups available for this database</option>';
+      console.log('No backups found for this database');
+    }
+  } catch (error) {
+    console.error('Failed to load backups:', error);
+    selector.innerHTML = '<option value="">Error loading backups (check console)</option>';
+  }
+}
+
+function toggleSchemaData(checkbox) {
+  const dataOnly = document.querySelector('input[name="data_only"]');
+  const schemaOnly = document.querySelector('input[name="schema_only"]');
+
+  if (checkbox.name === 'data_only' && checkbox.checked) {
+    schemaOnly.checked = false;
+  } else if (checkbox.name === 'schema_only' && checkbox.checked) {
+    dataOnly.checked = false;
+  }
+}
+
+async function submitRestore() {
+  const form = document.getElementById('restore-form');
+  const formData = new FormData(form);
+
+  // Build restore request matching RestoreRequest struct
+  const request = {
+    databaseId: formData.get('database_id'),
+    s3Key: formData.get('backup_key'),
+    targetDatabase: formData.get('target_database'),
+    clean: formData.get('clean') === 'true',
+    createDb: formData.get('create_db') === 'true',
+    dataOnly: formData.get('data_only') === 'true',
+    schemaOnly: formData.get('schema_only') === 'true',
+    noOwner: formData.get('no_owner') === 'true',
+    noPrivileges: formData.get('no_privileges') === 'true',
+    ifExists: formData.get('if_exists') === 'true',
+    jobs: parseInt(formData.get('jobs')) || 1,
+    schemas: formData.get('schemas') ? formData.get('schemas').split(',').map(s => s.trim()).filter(s => s) : [],
+    tables: formData.get('tables') ? formData.get('tables').split(',').map(s => s.trim()).filter(s => s) : []
+  };
+
+  // Validate
+  if (!request.databaseId || !request.s3Key || !request.targetDatabase) {
+    showMessage('Please fill in all required fields', 'error');
+    return;
+  }
+
+  // Confirm
+  if (!confirm(`Start restore to database "${request.targetDatabase}"?`)) {
+    return;
+  }
+
+  try {
+    const response = await api('/api/restore/trigger', {
+      method: 'POST',
+      body: JSON.stringify(request)
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      showMessage(`Restore started successfully (ID: ${result.id})`, 'success');
+      form.reset();
+      loadActiveRestores();
+      loadRestoreHistory();
+    } else {
+      const error = await response.text();
+      showMessage(`Failed to start restore: ${error}`, 'error');
+    }
+  } catch (error) {
+    showMessage(`Error: ${error.message}`, 'error');
+  }
+}
+
+async function loadActiveRestores() {
+  try {
+    const response = await api('/api/restore-runs?status=running');
+    const data = await response.json();
+
+    const container = document.getElementById('active-restores-list');
+
+    if (!data.items || data.items.length === 0) {
+      container.innerHTML = '<div class="no-data">No active restore operations</div>';
+      return;
+    }
+
+    container.innerHTML = data.items.map(restore => {
+      const duration = Date.now() - new Date(restore.startedAt).getTime();
+      const progress = restore.progress || 0;
+
+      return `
+        <div class="job-item">
+          <div class="job-header">
+            <span class="job-type badge badge-info">RESTORE</span>
+            <span class="job-database">${escapeHtml(restore.databaseName || 'Unknown')}</span>
+            <span class="job-target">→ ${escapeHtml(restore.targetDatabase)}</span>
+          </div>
+          <div class="job-progress">
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: ${progress}%"></div>
+            </div>
+            <span class="progress-text">${progress}%</span>
+          </div>
+          <div class="job-info">
+            <span>Running for ${formatDuration(duration)}</span>
+            <button class="btn btn-sm btn-danger" onclick="cancelRestore('${restore.id}')">
+              Cancel
+            </button>
+          </div>
+          ${restore.message ? `<div class="job-message">${escapeHtml(restore.message)}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+  } catch (error) {
+    console.error('Failed to load active restores:', error);
+  }
+}
+
+async function loadRestoreHistory(page = 1) {
+  const databaseFilter = document.getElementById('history-database-filter').value;
+  const statusFilter = document.getElementById('history-status-filter').value;
+
+  let url = `/api/restore-runs?page=${page}&page_size=10`;
+  if (databaseFilter) url += `&database_id=${databaseFilter}`;
+  if (statusFilter) url += `&status=${statusFilter}`;
+
+  try {
+    const response = await api(url);
+    const data = await response.json();
+
+    updateRestoreHistoryTable(data.items);
+    updatePagination('restore-history-pagination', data, loadRestoreHistory);
+  } catch (error) {
+    console.error('Failed to load restore history:', error);
+    document.getElementById('restore-history-table').innerHTML =
+      '<tr><td colspan="8" class="error">Failed to load restore history</td></tr>';
+  }
+}
+
+function updateRestoreHistoryTable(restores) {
+  const tbody = document.getElementById('restore-history-table');
+
+  if (!restores || restores.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="no-data">No restore history</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = restores.map(restore => {
+    const statusClass = restore.status === 'success' ? 'success' :
+                        restore.status === 'failed' ? 'danger' :
+                        restore.status === 'running' ? 'info' : 'secondary';
+
+    let duration = 'N/A';
+    if (restore.completedAt) {
+      const ms = new Date(restore.completedAt) - new Date(restore.startedAt);
+      duration = formatDuration(ms);
+    } else if (restore.status === 'running') {
+      const ms = Date.now() - new Date(restore.startedAt);
+      duration = formatDuration(ms) + ' (ongoing)';
+    }
+
+    return `
+      <tr>
+        <td class="mono">${restore.id.substring(0, 8)}...</td>
+        <td>${escapeHtml(restore.databaseName || 'Unknown')}</td>
+        <td class="mono">${restore.sourceBackupId ? restore.sourceBackupId.substring(0, 12) + '...' : 'N/A'}</td>
+        <td>${escapeHtml(restore.targetDatabase)}</td>
+        <td>${formatRelativeTime(restore.startedAt)}</td>
+        <td>${duration}</td>
+        <td><span class="status-badge status-${statusClass}">${restore.status}</span></td>
+        <td>
+          ${restore.status === 'running' ?
+            `<button class="btn btn-sm btn-danger" onclick="cancelRestore('${restore.id}')">Cancel</button>` :
+            `<button class="btn btn-sm btn-secondary" onclick="showRestoreDetails('${restore.id}')">Details</button>`
+          }
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function cancelRestore(restoreId) {
+  if (!confirm('Cancel this restore operation?')) return;
+
+  try {
+    const response = await api(`/api/restore/${restoreId}/cancel`, {
+      method: 'POST'
+    });
+
+    if (response.ok) {
+      showMessage('Restore cancelled', 'success');
+      loadActiveRestores();
+      loadRestoreHistory();
+    } else {
+      const error = await response.text();
+      showMessage(`Failed to cancel restore: ${error}`, 'error');
+    }
+  } catch (error) {
+    showMessage(`Error: ${error.message}`, 'error');
+  }
+}
+
+async function showRestoreDetails(restoreId) {
+  try {
+    const response = await api(`/api/restore-runs/${restoreId}`);
+    const restore = await response.json();
+
+    const modal = document.getElementById('restore-details-modal');
+    const content = document.getElementById('restore-details-content');
+
+    content.innerHTML = `
+      <div class="details-grid">
+        <div class="detail-item">
+          <label>Restore ID:</label>
+          <span class="mono">${restore.id}</span>
+        </div>
+        <div class="detail-item">
+          <label>Database:</label>
+          <span>${escapeHtml(restore.databaseName || 'Unknown')}</span>
+        </div>
+        <div class="detail-item">
+          <label>Target Database:</label>
+          <span>${escapeHtml(restore.targetDatabase)}</span>
+        </div>
+        <div class="detail-item">
+          <label>Source Backup:</label>
+          <span class="mono">${restore.sourceBackupId || 'N/A'}</span>
+        </div>
+        <div class="detail-item">
+          <label>Started:</label>
+          <span>${new Date(restore.startedAt).toLocaleString()}</span>
+        </div>
+        <div class="detail-item">
+          <label>Completed:</label>
+          <span>${restore.completedAt ? new Date(restore.completedAt).toLocaleString() : 'N/A'}</span>
+        </div>
+        <div class="detail-item">
+          <label>Status:</label>
+          <span class="status-badge status-${restore.status === 'success' ? 'success' : 'danger'}">
+            ${restore.status}
+          </span>
+        </div>
+        <div class="detail-item full-width">
+          <label>Restore Options:</label>
+          <pre>${JSON.stringify(restore.restoreOptions, null, 2)}</pre>
+        </div>
+        ${restore.error ? `
+        <div class="detail-item full-width">
+          <label>Error:</label>
+          <pre class="error-text">${escapeHtml(restore.error)}</pre>
+        </div>
+        ` : ''}
+        ${restore.output ? `
+        <div class="detail-item full-width">
+          <label>Output:</label>
+          <pre class="output-text">${escapeHtml(restore.output)}</pre>
+        </div>
+        ` : ''}
+      </div>
+    `;
+
+    modal.style.display = 'block';
+  } catch (error) {
+    showMessage(`Failed to load restore details: ${error.message}`, 'error');
+  }
+}
+
+function closeRestoreDetails() {
+  document.getElementById('restore-details-modal').style.display = 'none';
+}
+
+function resetRestoreForm() {
+  document.getElementById('restore-form').reset();
+  document.getElementById('backup-selector').disabled = true;
+  document.getElementById('backup-selector').innerHTML = '<option value="">First select a database...</option>';
+}
+</script>
+{{end}}

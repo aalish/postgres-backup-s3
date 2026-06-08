@@ -1,9 +1,40 @@
+# Go build artifacts and caches
 .gocache/
 .gomodcache/
 dist/
 bin/
+build/
+
+# Local data
 backups/
+downloads/
 dev-db/
 *.dump
+
+# Environment files — keep only the *.example variants
 *.env
+.env
+.env.*
 !.env.example
+!.env.multi-db.example
+
+# Runtime config that contains real infrastructure values
+databases.json
+!databases.json.example
+
+# Project-specific SQL with real schema details
+fix_permissions.sql
+
+# Personal/WIP design docs and one-off dev scripts
+docs/
+scripts/dev/
+
+# Backup copies of templates / scratch files
+*.backup
+*.bak
+*.tmp
+
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store

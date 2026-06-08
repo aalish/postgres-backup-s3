@@ -30,6 +30,11 @@ type S3Uploader struct {
 	logger      *slog.Logger
 }
 
+// Client returns the underlying S3 client
+func (u *S3Uploader) Client() *s3.Client {
+	return u.client
+}
+
 type ObjectInfo struct {
 	Key          string    `json:"key"`
 	Filename     string    `json:"filename"`
@@ -74,6 +79,44 @@ func NewS3Uploader(ctx context.Context, cfg config.S3Config, retryConfig config.
 func (u *S3Uploader) Upload(ctx context.Context, archive backup.Archive) (string, error) {
 	key := BuildObjectKey(u.prefix, archive.Filename)
 	u.logger.Info("starting S3 upload", "bucket", u.bucket, "key", key, "size_bytes", archive.Size, "max_attempts", u.retryConfig.MaxAttempts)
+	u.logger.Debug("S3 upload details", "bucket", u.bucket, "key", key, "initial_delay", u.retryConfig.InitialDelay.String(), "max_delay", u.retryConfig.MaxDelay.String())
+
+	err := retry.DoWithNotify(ctx, u.retryConfig.MaxAttempts, u.retryConfig.InitialDelay, u.retryConfig.MaxDelay, func(attempt int) error {
+		file, err := os.Open(archive.Path)
+		if err != nil {
+			return fmt.Errorf("open archive for upload: %w", err)
+		}
+		defer file.Close()
+
+		u.logger.Info("uploading backup to S3", "attempt", attempt, "bucket", u.bucket, "key", key)
+
+		if _, err := u.uploader.Upload(ctx, &s3.PutObjectInput{
+			Bucket: aws.String(u.bucket),
+			Key:    aws.String(key),
+			Body:   file,
+		}); err != nil {
+			return fmt.Errorf("put object: %w", err)
+		}
+
+		if err := u.verifyUpload(ctx, key, archive.Size); err != nil {
+			return fmt.Errorf("verify uploaded object: %w", err)
+		}
+
+		return nil
+	}, func(attempt int, err error, nextDelay time.Duration) {
+		u.logger.Warn("S3 upload attempt failed; retry scheduled", "attempt", attempt, "bucket", u.bucket, "key", key, "retry_in", nextDelay.String(), "error", err)
+	})
+	if err != nil {
+		return "", err
+	}
+
+	u.logger.Info("S3 upload completed", "bucket", u.bucket, "key", key)
+	return fmt.Sprintf("s3://%s/%s", u.bucket, key), nil
+}
+
+// UploadWithKey uploads an archive to S3 using a specific key
+func (u *S3Uploader) UploadWithKey(ctx context.Context, archive backup.Archive, key string) (string, error) {
+	u.logger.Info("starting S3 upload with custom key", "bucket", u.bucket, "key", key, "size_bytes", archive.Size, "max_attempts", u.retryConfig.MaxAttempts)
 	u.logger.Debug("S3 upload details", "bucket", u.bucket, "key", key, "initial_delay", u.retryConfig.InitialDelay.String(), "max_delay", u.retryConfig.MaxDelay.String())
 
 	err := retry.DoWithNotify(ctx, u.retryConfig.MaxAttempts, u.retryConfig.InitialDelay, u.retryConfig.MaxDelay, func(attempt int) error {

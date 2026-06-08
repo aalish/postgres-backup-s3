@@ -1,305 +1,648 @@
-# PostgreSQL Backup to S3
+# PostgreSQL Multi-Database Backup & Restore System
 
-This repository now contains two production-oriented Go binaries:
+A production-grade PostgreSQL backup solution with multi-database support, automated restore capabilities, role-based access control, and a secure web dashboard for managing database backups across multiple PostgreSQL instances.
 
-- `pgbackup`: a CLI that creates a full PostgreSQL backup with `pg_dump`, validates the archive with `pg_restore --list`, uploads it to Amazon S3, verifies the uploaded object, and only then removes the local dump file.
-- `pgbackupd`: a secure web dashboard for triggering backups, browsing S3 backup history, editing runtime settings stored in MongoDB Atlas, and enforcing retention automatically.
+## 🌟 Key Features
 
-The generated dump is a PostgreSQL custom archive (`.dump`) created with `pg_dump --format=custom --create --blobs`, so it contains the schema, data, indexes, constraints, triggers, functions, and other database objects needed for a complete database restore.
+### Core Capabilities
+- **🔄 Multi-Database Support**: Backup multiple PostgreSQL databases with individual configurations
+- **⏮️ Database Restore**: Restore databases from S3 or local backups with comprehensive options
+- **👥 Multi-User Authentication**: Role-based access control with admin, operator, and viewer roles
+- **🌐 Web Dashboard**: Secure web interface for backup management and monitoring
+- **☁️ S3 Integration**: Automatic upload to AWS S3 with verification
+- **🔒 Security First**: JWT authentication, CSRF protection, encrypted passwords
+- **📊 Audit Logging**: Complete audit trail for compliance
+- **⚡ Parallel Execution**: Backup multiple databases concurrently
+- **📅 Scheduled Backups**: Cron-based scheduling per database
+- **♻️ Retention Management**: Automatic cleanup of old backups
 
-## Features
+### Advanced Features
+- **Selective Restore**: Restore specific schemas, tables, or data-only
+- **Dry-Run Mode**: Test restore operations without making changes
+- **Compression Control**: Per-database compression levels (0-9)
+- **SSL/TLS Support**: Secure connections to PostgreSQL servers
+- **Custom S3 Endpoints**: Support for S3-compatible storage
+- **Webhook Notifications**: Alert on backup/restore failures
+- **Database Health Monitoring**: Track backup status and statistics
 
-- Full PostgreSQL backups using `pg_dump`
-- Timestamped, compressed custom-format archives
-- Configurable database connection details
-- S3 uploads using either static AWS keys or IAM role based credentials
-- Structured logging in JSON or text format
-- Upload retries with exponential backoff
-- Archive validation before upload
-- Upload verification before deleting the local file
-- CLI-friendly exit codes for cron, systemd, or CI/CD jobs
-- Secure admin dashboard with JWT cookie authentication and CSRF protection
-- MongoDB Atlas-backed runtime settings with defaults
-- Automated retention enforcement with audit and retention-run logs
+## 📦 Components
 
-## Project Layout
+### 1. **pgbackup** - Multi-Database Backup CLI
+Handles automated backups for single or multiple PostgreSQL databases with validation and S3 upload.
 
-```text
-cmd/pgbackup/           CLI entrypoint
-cmd/pgbackupd/          dashboard server entrypoint
-internal/config/        environment and env-file configuration loading
-internal/backup/        pg_dump execution and archive validation
-internal/storage/       S3 upload and verification
-internal/retry/         retry helper
-internal/service/       orchestration of the backup workflow
-internal/dashboard/     embedded admin UI, auth, and HTTP handlers
-internal/store/         MongoDB persistence for settings, sessions, and logs
-internal/runtimecfg/    mutable runtime settings loaded from MongoDB
+### 2. **pgrestore** - Database Restore CLI
+Comprehensive restore tool with safety checks, selective restore, and progress tracking.
+
+### 3. **pgbackupd** - Web Dashboard
+Secure web interface for backup management, user administration, and system monitoring.
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Go 1.25+ (for building from source)
+- PostgreSQL client tools (`pg_dump`, `pg_restore`)
+- AWS S3 bucket or S3-compatible storage
+- MongoDB (for dashboard only)
+- Network access to PostgreSQL servers
+
+### Installation
+
+#### Option 1: Download Pre-built Binaries
+```bash
+# Download latest release
+wget https://github.com/neelgai/postgres-backup/releases/latest/download/pgbackup_linux_amd64
+wget https://github.com/neelgai/postgres-backup/releases/latest/download/pgrestore_linux_amd64
+wget https://github.com/neelgai/postgres-backup/releases/latest/download/pgbackupd_linux_amd64
+
+# Make executable
+chmod +x pgbackup_linux_amd64 pgrestore_linux_amd64 pgbackupd_linux_amd64
+
+# Move to PATH
+sudo mv pgbackup_linux_amd64 /usr/local/bin/pgbackup
+sudo mv pgrestore_linux_amd64 /usr/local/bin/pgrestore
+sudo mv pgbackupd_linux_amd64 /usr/local/bin/pgbackupd
 ```
 
-## Requirements
-
-- Go 1.25+
-- PostgreSQL client tools installed on the host:
-  - `pg_dump`
-  - `pg_restore`
-- AWS credentials available through either:
-  - `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
-  - an IAM role / default AWS credential chain
-- MongoDB Atlas reachable from the host when running `pgbackupd`
-- Network access from the host to PostgreSQL and Amazon S3
-
-## Setup
-
-1. Copy the example configuration:
-
-   ```bash
-   cp .env.example pgbackup.env
-   ```
-
-2. Edit `pgbackup.env` with your PostgreSQL and S3 values.
-
-3. Build the binary:
-
-   ```bash
-   go build -o bin/pgbackup ./cmd/pgbackup
-   ```
-
-4. Run a backup:
-
-   ```bash
-   ./bin/pgbackup -config ./pgbackup.env
-   ```
-
-Environment variables already present in the shell take precedence over values inside the env file, which is useful for secret injection in production.
-
-## Dashboard Setup
-
-The dashboard server reuses the same PostgreSQL and AWS connection settings as the CLI, then adds:
-
-- `ADMIN_USERNAME`
-- `ADMIN_PASSWORD`
-- `JWT_SECRET`
-- `MONGODB_URI`
-
-Build and run the dashboard:
-
+#### Option 2: Build from Source
 ```bash
+# Clone repository
+git clone https://github.com/neelgai/postgres-backup.git
+cd postgres-backup
+
+# Build all binaries
+go build -o bin/pgbackup ./cmd/pgbackup
+go build -o bin/pgrestore ./cmd/pgrestore
 go build -o bin/pgbackupd ./cmd/pgbackupd
-./bin/pgbackupd -config ./pgbackup.env
 ```
 
-By default the dashboard listens on `:8080`. For local HTTP development, set `COOKIE_SECURE=false`; keep it `true` in production behind HTTPS.
+### Basic Configuration
 
-## GitHub Release Automation
-
-This repository includes a GitHub Actions workflow at [.github/workflows/release.yml](/Users/xero/data/Neelgai/postgres-backup/.github/workflows/release.yml) that:
-
-- runs on `ubuntu-22.04`
-- runs `go test ./...`
-- builds Linux `amd64` binaries with the Git tag embedded in `pgbackup -version` and `pgbackupd -version`
-- uploads raw binaries as `pgbackup_<tag>_linux_amd64` and `pgbackupd_<tag>_linux_amd64`
-- packages both binaries as `.tar.gz` archives
-- uploads a `.sha256` checksum file for each binary and archive to the GitHub Release page
-
-To publish a release asset:
-
+#### Single Database Mode
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+# Copy example configuration
+cp .env.example .env
+
+# Edit with your settings
+vim .env
+
+# Run backup
+./bin/pgbackup -config .env
 ```
 
-The workflow is tag-driven and triggers on tags matching `v*`.
-
-## Release Requirements
-
-For the release workflow to succeed on GitHub, you need:
-
-- Actions enabled for the repository
-- the default `GITHUB_TOKEN` allowed to create and update releases
-- a pushed Git tag such as `v1.0.0`
-
-The downloaded binaries are built for Linux `amd64` and are a good fit for Ubuntu 22.04 x86_64 hosts.
-
-## Runtime Requirements For Released Binary
-
-The GitHub Release assets contain `pgbackup` and `pgbackupd`. The target Ubuntu 22.04 host still needs:
-
-- `pg_dump`
-- `pg_restore`
-- network access to PostgreSQL and S3
-- your runtime configuration file or environment variables
-- MongoDB Atlas access for the dashboard server
-
-Example Ubuntu package install:
-
+#### Multi-Database Mode
 ```bash
-sudo apt-get update
-sudo apt-get install -y postgresql-client
+# Create database configuration
+cp databases.json.example databases.json
+vim databases.json
+
+# Set environment variables
+export MULTI_DATABASE_MODE=true
+export DATABASE_CONFIG_FILE=databases.json
+
+# Run backup for all databases
+./bin/pgbackup -config .env -parallel
 ```
 
-If you need a specific PostgreSQL client version for compatibility with your server, install that version explicitly instead of the generic package.
+## 🔧 Configuration
 
-## Dashboard Capabilities
+### Environment Variables
 
-`pgbackupd` provides:
-
-- a secure login page using short-lived JWT access cookies plus refresh-token rotation
-- HttpOnly, Secure, `SameSite=Strict` cookies for auth tokens
-- CSRF protection on state-changing endpoints
-- login rate limiting
-- a paginated backup table sourced from S3
-- manual backup triggering with live status polling
-- MongoDB-backed settings for retention, schedule, S3 bucket/prefix, output path, compression, and webhook notifications
-- automatic retention runs on startup, config changes, and a background hourly loop
-- audit logs for auth, backup, retention, and config changes
-
-## Configuration
-
-The binary reads configuration from environment variables, optionally seeded from a `KEY=VALUE` file passed through `-config`.
-
+#### Core Configuration
 | Variable | Required | Default | Description |
-| --- | --- | --- | --- |
-| `PGHOST` | Yes |  | PostgreSQL host |
+|----------|----------|---------|-------------|
+| `MULTI_DATABASE_MODE` | No | `false` | Enable multi-database support |
+| `DATABASE_CONFIG_FILE` | No | `databases.json` | Path to database configuration file |
+| `PGHOST` | Yes* | | PostgreSQL host (single-db mode) |
 | `PGPORT` | No | `5432` | PostgreSQL port |
-| `PGUSER` | Yes |  | PostgreSQL username |
-| `PGPASSWORD` | No |  | PostgreSQL password. Can be empty if `.pgpass` or another libpq auth method is used |
-| `PGDATABASE` | Yes |  | Database name to back up |
-| `PG_DUMP_PATH` | No | `pg_dump` | Path to the `pg_dump` binary |
-| `PG_RESTORE_PATH` | No | `pg_restore` | Path to the `pg_restore` binary used for validation |
-| `BACKUP_OUTPUT_DIR` | No | `./backups` | Temporary local directory for the dump before upload |
-| `BACKUP_FILENAME_PREFIX` | No | `PGDATABASE` | Prefix for generated dump filenames |
-| `BACKUP_COMPRESSION` | No | `6` | `pg_dump` compression level from `0` to `9` |
-| `AWS_REGION` | Yes |  | AWS region for S3 |
-| `S3_BUCKET` | Yes |  | Destination S3 bucket |
-| `S3_PREFIX` | No | empty | Prefix/folder inside the bucket |
-| `AWS_ACCESS_KEY_ID` | No | empty | Static AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | No | empty | Static AWS secret key |
-| `AWS_SESSION_TOKEN` | No | empty | Optional session token for temporary credentials |
-| `S3_USE_PATH_STYLE` | No | `false` | Optional S3 path-style access toggle |
-| `S3_ENDPOINT_URL` | No | empty | Optional custom S3 endpoint |
-| `UPLOAD_MAX_ATTEMPTS` | No | `5` | Number of upload attempts |
-| `UPLOAD_INITIAL_DELAY` | No | `2s` | Initial delay between retries |
-| `UPLOAD_MAX_DELAY` | No | `30s` | Maximum backoff delay |
-| `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
-| `LOG_FORMAT` | No | `json` | `json` or `text` |
+| `PGUSER` | Yes* | | PostgreSQL username |
+| `PGPASSWORD` | No | | PostgreSQL password |
+| `PGDATABASE` | Yes* | | Database name |
 
-## Usage Examples
+*Required only in single-database mode
 
-### Run once with an env file
+#### S3 Configuration
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `AWS_REGION` | Yes | | AWS region |
+| `S3_BUCKET` | Yes | | S3 bucket name |
+| `S3_PREFIX` | No | | S3 key prefix/folder |
+| `AWS_ACCESS_KEY_ID` | No | | AWS access key |
+| `AWS_SECRET_ACCESS_KEY` | No | | AWS secret key |
+| `S3_ENDPOINT_URL` | No | | Custom S3 endpoint |
 
-```bash
-./bin/pgbackup -config /etc/pgbackup/pgbackup.env
+#### Dashboard Configuration
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `HTTP_ADDR` | No | `:8080` | Web server address |
+| `ADMIN_USERNAME` | Yes | | Initial admin username |
+| `ADMIN_PASSWORD` | Yes | | Initial admin password |
+| `JWT_SECRET` | Yes | | JWT signing secret (min 32 chars) |
+| `MONGODB_URI` | Yes | | MongoDB connection string |
+| `MONGODB_DATABASE` | No | `pgbackup` | MongoDB database name |
+
+### Multi-Database Configuration File
+
+Create a `databases.json` file:
+
+```json
+{
+  "databases": [
+    {
+      "id": "production_main",
+      "name": "Production Main Database",
+      "host": "prod-db.example.com",
+      "port": 5432,
+      "user": "backup_user",
+      "database": "main_app",
+      "ssl_mode": "require",
+      "enabled": true,
+      "backup_schedule": "0 2 * * *",
+      "retention_days": 30,
+      "compression_level": 6,
+      "s3_prefix": "backups/production/main",
+      "filename_prefix": "prod_main",
+      "tags": ["critical", "production"]
+    },
+    {
+      "id": "analytics",
+      "name": "Analytics Database",
+      "host": "analytics-db.example.com",
+      "port": 5432,
+      "user": "analytics_user",
+      "database": "analytics",
+      "ssl_mode": "verify-full",
+      "enabled": true,
+      "backup_schedule": "0 23 * * *",
+      "retention_days": 90,
+      "compression_level": 9,
+      "s3_prefix": "backups/analytics",
+      "filename_prefix": "analytics",
+      "tags": ["analytics", "data-warehouse"]
+    }
+  ]
+}
 ```
 
-### Run once with shell environment variables
+### Database-Specific Passwords
+
+Set passwords via environment variables:
 
 ```bash
-export PGHOST=db.internal
-export PGPORT=5432
-export PGUSER=backup_user
-export PGPASSWORD='super-secret'
-export PGDATABASE=appdb
-export AWS_REGION=us-east-1
-export S3_BUCKET=company-postgres-backups
-export S3_PREFIX=prod/appdb
+# General fallback password
+export PGPASSWORD=default-password
 
-./bin/pgbackup
+# Database-specific passwords
+export PGPASSWORD_PRODUCTION_MAIN=prod-main-password
+export PGPASSWORD_ANALYTICS=analytics-password
 ```
 
-### Run with verbose progress logs
+## 📚 Usage Examples
 
+### Backup Operations
+
+#### Backup All Databases
 ```bash
-LOG_LEVEL=debug LOG_FORMAT=text ./bin/pgbackup -config /etc/pgbackup/pgbackup.env
+# Sequential execution
+pgbackup -config .env
+
+# Parallel execution (faster)
+pgbackup -config .env -parallel
+
+# Verbose output
+LOG_LEVEL=debug LOG_FORMAT=text pgbackup -config .env
 ```
 
-### Schedule with cron
+#### Backup Specific Database
+```bash
+# Backup only production database
+pgbackup -config .env -database production_main
 
+# Backup only analytics
+pgbackup -config .env -database analytics
+```
+
+#### Schedule with Cron
 ```cron
-0 2 * * * /opt/pgbackup/bin/pgbackup -config /etc/pgbackup/pgbackup.env >> /var/log/pgbackup.log 2>&1
+# Backup all databases daily at 2 AM
+0 2 * * * /usr/local/bin/pgbackup -config /etc/pgbackup/.env -parallel
+
+# Backup specific database
+0 3 * * * /usr/local/bin/pgbackup -config /etc/pgbackup/.env -database analytics
 ```
 
-## Backup Flow
+### Restore Operations
 
-1. Load configuration from environment variables and optional env file.
-2. Run `pg_dump` in custom archive mode with compression and `--create`.
-3. Confirm that the dump file exists and is non-empty.
-4. Run `pg_restore --list` against the archive to validate that it is readable.
-5. Upload the archive to S3.
-6. Verify the uploaded object using `HeadObject` and compare its size with the local dump.
-7. Delete the local dump file only after successful upload verification.
-
-If any step fails, the command exits with a non-zero status code and the local dump file is left in place for investigation.
-
-## Logging and Progress
-
-- `LOG_LEVEL=info` shows major workflow progress such as dump creation, validation, upload, verification, and cleanup.
-- `LOG_LEVEL=debug` adds sanitized configuration details, command paths, and retry timing details.
-- `LOG_FORMAT=text` is usually easier to read interactively in a terminal.
-- `LOG_FORMAT=json` is better for log aggregation systems.
-
-Example:
-
+#### List Available Backups
 ```bash
-LOG_LEVEL=debug LOG_FORMAT=text ./bin/pgbackup -config ./pgbackup.env
+# List all backups
+pgrestore -config .env --list
+
+# List backups for specific database
+pgrestore -config .env --list --database-id production_main
+
+# List with details
+pgrestore -config .env --list --verbose
 ```
 
-## Restore Flow
-
-Because the archive is created with `--create`, you can restore the database from the dump alone.
-
-Example restore command:
-
+#### Basic Restore
 ```bash
-export PGPASSWORD='restore-password'
-pg_restore \
-  --clean \
-  --if-exists \
-  --create \
-  --dbname=postgres \
-  /path/to/appdb-prod_20260316T020000Z.dump
+# Restore from S3
+pgrestore -config .env \
+  --s3 s3://my-bucket/backups/prod_main_20240101_020000.dump \
+  --target-db restored_production
+
+# Restore from local file
+pgrestore -config .env \
+  --local /path/to/backup.dump \
+  --target-db my_restored_db
 ```
 
-Notes:
+#### Advanced Restore Options
+```bash
+# Clean restore (drop existing objects)
+pgrestore -config .env \
+  --s3 s3://my-bucket/backup.dump \
+  --clean --create-db \
+  --target-db new_database
 
-- Run the restore as a PostgreSQL superuser or another role with permission to create databases and owned objects.
-- The target roles referenced inside the dump should already exist if ownership and grants must be restored exactly.
-- PostgreSQL global objects such as cluster roles and tablespaces are not included in a single-database `pg_dump`; back them up separately with `pg_dumpall --globals-only` if your environment depends on them.
+# Restore specific schemas only
+pgrestore -config .env \
+  --local backup.dump \
+  --schemas public,app_schema \
+  --target-db restored_db
 
-## Deployment Notes
+# Data-only restore (no schema)
+pgrestore -config .env \
+  --local backup.dump \
+  --data-only \
+  --target-db existing_db
 
-- Install the binary on a host that has `pg_dump` and `pg_restore` from a version compatible with your PostgreSQL server.
-- Store configuration in a root-readable file such as `/etc/pgbackup/pgbackup.env` or inject values through a secret manager.
-- Prefer IAM roles over long-lived AWS access keys when running on EC2, ECS, or EKS.
-- Ensure the S3 bucket has versioning and server-side encryption enabled.
-- Limit the PostgreSQL user to the permissions needed to read the target database.
-- Use OS-level process supervision like `systemd`, Kubernetes CronJobs, or a managed scheduler for recurring execution.
+# Parallel restore with 4 jobs
+pgrestore -config .env \
+  --local large_backup.dump \
+  --jobs 4 \
+  --target-db restored_db
 
-## Exit Codes
+# Dry run (test without making changes)
+pgrestore -config .env \
+  --local backup.dump \
+  --dry-run --verbose
+```
 
-- `0`: backup completed successfully
-- `1`: runtime failure during backup, validation, upload, or cleanup
-- `2`: configuration or startup failure
+#### Restore with Safety Options
+```bash
+# Skip confirmation prompt
+pgrestore -config .env \
+  --s3 s3://bucket/backup.dump \
+  --yes \
+  --target-db restored_db
 
-## Design Choices
+# Force restore despite warnings
+pgrestore -config .env \
+  --local backup.dump \
+  --force \
+  --target-db restored_db
 
-- **Go CLI**: produces a single deployable binary, has strong standard-library support for process execution and logging, and works well for scheduled jobs.
-- **PostgreSQL custom archive format**: supports compression, `pg_restore`, and complete database restores while staying portable.
-- **`pg_restore --list` validation**: confirms the dump archive is structurally readable before any upload is attempted.
-- **S3 `HeadObject` verification**: ensures the uploaded object exists and matches the local file size before cleanup.
-- **Environment-based configuration**: keeps the service easy to deploy in containers, VMs, and schedulers without baking secrets into the binary.
+# Keep downloaded S3 file
+pgrestore -config .env \
+  --s3 s3://bucket/backup.dump \
+  --keep-download \
+  --target-db restored_db
+```
 
-## Assumptions
+### Dashboard Operations
 
-- `pg_dump` and `pg_restore` are installed and available on the runtime host.
-- The PostgreSQL user can connect and read all objects that need to be backed up.
-- The S3 bucket already exists and the provided AWS identity can write to it.
-- Backing up database-global objects such as roles is handled separately if required.
+#### Start Dashboard Server
+```bash
+# Start with configuration file
+pgbackupd -config .env
 
-## Security Considerations
+# Start with environment variables
+MONGODB_URI=mongodb://localhost:27017 \
+ADMIN_USERNAME=admin \
+ADMIN_PASSWORD=secure-password \
+JWT_SECRET=random-32-character-string-minimum \
+pgbackupd
+```
 
-- Avoid committing real credentials to source control. Use the env example only as a template.
-- Prefer IAM roles or short-lived AWS credentials over long-lived static keys.
-- Restrict file permissions on configuration files because they may contain database passwords.
-- Consider enabling server-side encryption, bucket versioning, object lock, and lifecycle policies on the S3 bucket.
-- Ensure temporary backup storage is on encrypted disk if local-at-rest protection is required.
+#### Access Dashboard
+```
+http://localhost:8080
+```
+
+Default credentials (first run):
+- Username: `admin`
+- Password: `admin` (change immediately)
+
+## 👥 User Management
+
+### User Roles and Permissions
+
+| Role | Description | Permissions |
+|------|-------------|------------|
+| **Admin** | Full system access | All operations including user management |
+| **Operator** | Backup/restore operations | Create backups/restores, view settings |
+| **Viewer** | Read-only access | View backups, databases, and logs |
+
+### Managing Users
+
+#### Via Environment Variables (Initial Setup)
+```bash
+# Set initial admin credentials
+export ADMIN_USERNAME=admin
+export ADMIN_PASSWORD=secure-admin-password
+```
+
+#### Via MongoDB (After Setup)
+The system automatically creates user management collections. Additional users can be added through:
+1. Web dashboard UI (when fully implemented)
+2. Direct MongoDB operations
+3. API endpoints (when implemented)
+
+### Database Access Control
+
+Users can be restricted to specific databases:
+
+```json
+{
+  "username": "john.doe",
+  "role": "operator",
+  "allowed_databases": ["production_main", "staging"],
+  "permissions": {
+    "view_backups": true,
+    "create_backups": true,
+    "create_restores": true,
+    "view_settings": true
+  }
+}
+```
+
+## 🔒 Security Best Practices
+
+### 1. PostgreSQL Security
+```sql
+-- Create dedicated backup user
+CREATE USER backup_user WITH PASSWORD 'secure-password';
+GRANT CONNECT ON DATABASE myapp TO backup_user;
+GRANT USAGE ON SCHEMA public TO backup_user;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO backup_user;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO backup_user;
+
+-- For future tables
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT SELECT ON TABLES TO backup_user;
+```
+
+### 2. Password Management
+- Use strong, unique passwords for each database
+- Store passwords in environment variables or secret management systems
+- Never commit passwords to version control
+- Rotate passwords regularly
+
+### 3. Network Security
+- Use SSL/TLS connections (`ssl_mode: "require"` or `"verify-full"`)
+- Restrict database access by IP
+- Use VPN or private networks for database connections
+
+### 4. S3 Security
+- Enable S3 bucket versioning
+- Enable server-side encryption
+- Use IAM roles instead of static credentials when possible
+- Implement bucket lifecycle policies
+- Enable S3 access logging
+
+### 5. Dashboard Security
+- Use HTTPS in production (`COOKIE_SECURE=true`)
+- Set strong JWT secret (minimum 32 characters)
+- Implement rate limiting
+- Regular security updates
+- Monitor audit logs
+
+## 📁 Backup Organization
+
+### S3 Structure
+```
+s3://your-bucket/
+├── backups/
+│   ├── production/
+│   │   ├── main/
+│   │   │   ├── prod_main_20240101_020000.dump
+│   │   │   ├── prod_main_20240102_020000.dump
+│   │   │   └── prod_main_20240103_020000.dump
+│   │   └── analytics/
+│   │       ├── analytics_20240101_030000.dump
+│   │       └── analytics_20240102_030000.dump
+│   ├── staging/
+│   │   ├── staging_20240101_040000.dump
+│   │   └── staging_20240102_040000.dump
+│   └── development/
+│       └── dev_20240101_050000.dump
+```
+
+### Local Directory
+```
+./backups/
+├── downloads/           # Downloaded backups for restore
+│   ├── production_main/
+│   └── staging/
+└── temp/               # Temporary files (auto-cleaned)
+```
+
+## 🔄 Backup Workflow
+
+1. **Create Dump**: Execute `pg_dump` with custom format and compression
+2. **Validate**: Run `pg_restore --list` to verify archive integrity
+3. **Upload**: Transfer to S3 with retry logic
+4. **Verify**: Check S3 object size matches local file
+5. **Cleanup**: Remove local file only after successful verification
+
+## ⚡ Performance Optimization
+
+### Parallel Backups
+```bash
+# Backup 10 databases in parallel
+pgbackup -config .env -parallel
+
+# Monitor resource usage
+htop  # In another terminal
+```
+
+### Compression Levels
+- `0`: No compression (fastest, largest files)
+- `1-3`: Low compression (fast, moderate size)
+- `4-6`: Medium compression (balanced)
+- `7-9`: High compression (slowest, smallest files)
+
+### Network Optimization
+```bash
+# Increase upload chunk size
+export AWS_S3_UPLOAD_PART_SIZE=10485760  # 10MB chunks
+
+# Adjust concurrent uploads
+export AWS_S3_MAX_CONCURRENT_UPLOADS=10
+```
+
+## 📊 Monitoring
+
+### Logs
+```bash
+# JSON logs (for log aggregation)
+LOG_FORMAT=json pgbackup -config .env
+
+# Human-readable logs
+LOG_FORMAT=text LOG_LEVEL=debug pgbackup -config .env
+
+# Save to file
+pgbackup -config .env 2>&1 | tee backup.log
+```
+
+### Metrics to Monitor
+- Backup duration per database
+- Backup size trends
+- Success/failure rates
+- S3 storage usage
+- Retention policy effectiveness
+
+### Alerting
+Configure webhook notifications for failures:
+```json
+{
+  "webhook_url": "https://hooks.slack.com/services/...",
+  "webhook_timeout": "10s",
+  "notification_enabled": true
+}
+```
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+#### 1. Authentication Failed
+```bash
+# Check credentials
+psql -h hostname -U username -d database -c "SELECT 1"
+
+# Verify password
+echo $PGPASSWORD
+```
+
+#### 2. S3 Upload Fails
+```bash
+# Test S3 access
+aws s3 ls s3://your-bucket/
+
+# Check credentials
+aws sts get-caller-identity
+```
+
+#### 3. Restore Fails
+```bash
+# List archive contents
+pg_restore -l backup.dump
+
+# Verbose restore
+pgrestore -config .env --local backup.dump --verbose --dry-run
+```
+
+#### 4. Out of Disk Space
+```bash
+# Check available space
+df -h /path/to/backup/dir
+
+# Clean old local backups
+find ./backups -name "*.dump" -mtime +7 -delete
+```
+
+### Debug Mode
+```bash
+# Maximum verbosity
+LOG_LEVEL=debug LOG_FORMAT=text pgbackup -config .env 2>&1 | tee debug.log
+
+# Trace pg_dump execution
+PGDUMP_VERBOSE=1 pgbackup -config .env
+```
+
+## 🚦 Exit Codes
+
+| Code | Description |
+|------|-------------|
+| 0 | Success |
+| 1 | Runtime error (backup/restore failed) |
+| 2 | Configuration error |
+| 3 | User cancelled (restore confirmation) |
+
+## 📈 Roadmap
+
+### Planned Features
+- [ ] Full web UI for multi-database management
+- [ ] Real-time backup progress via WebSocket
+- [ ] Point-in-time recovery interface
+- [ ] Incremental backups support
+- [ ] Backup encryption at rest
+- [ ] Kubernetes operator
+- [ ] Prometheus metrics export
+- [ ] Backup verification jobs
+- [ ] Cross-region replication
+- [ ] Database migration tools
+
+### In Development
+- [x] Multi-database support
+- [x] Database restore functionality
+- [x] User authentication system
+- [x] Role-based access control
+- [ ] Complete web dashboard UI
+- [ ] REST API documentation
+- [ ] Terraform modules
+- [ ] Docker images
+
+## 🤝 Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+### Development Setup
+```bash
+# Clone repository
+git clone https://github.com/neelgai/postgres-backup.git
+cd postgres-backup
+
+# Install dependencies
+go mod download
+
+# Run tests
+go test ./...
+
+# Build all binaries
+make build
+
+# Run with race detector
+go run -race ./cmd/pgbackup
+```
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🆘 Support
+
+### Documentation
+- [Configuration Guide](docs/configuration.md)
+- [Multi-Database Setup](docs/multi-database.md)
+- [Restore Guide](docs/restore.md)
+- [Security Best Practices](docs/security.md)
+- [API Reference](docs/api.md)
+
+### Getting Help
+- **Issues**: [GitHub Issues](https://github.com/neelgai/postgres-backup/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/neelgai/postgres-backup/discussions)
+- **Security**: Report security issues to security@example.com
+
+## 🙏 Acknowledgments
+
+- PostgreSQL team for excellent backup tools
+- AWS SDK for Go team
+- MongoDB Go driver team
+- Go community for amazing libraries
+
+---
+
+**Built with ❤️ for reliable database backups**

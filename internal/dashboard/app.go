@@ -27,6 +27,7 @@ type App struct {
 	settings   *SettingsService
 	backups    *BackupManager
 	retention  *RetentionManager
+	restore    *RestoreManager
 	scheduler  *Scheduler
 	templates  *Templates
 	httpServer *http.Server
@@ -92,6 +93,7 @@ func New(ctx context.Context, cfg config.DashboardConfig, logger *slog.Logger, v
 	notifier := NewWebhookNotifier(logger)
 	app.backups = NewBackupManager(cfg.Base, app.settings, dataStore, logger, notifier, app.recordAudit)
 	app.retention = NewRetentionManager(cfg.Base, app.settings, dataStore, logger, notifier, app.recordAudit)
+	app.restore = NewRestoreManager(cfg.Base, app.settings, dataStore, logger, notifier, app.recordAudit)
 	app.scheduler = NewScheduler(app.settings, app.backups, app.retention, logger, app.recordAudit)
 	app.httpServer = &http.Server{
 		Addr:         cfg.HTTP.Addr,
@@ -133,6 +135,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if err := a.retention.Wait(context.Background()); err != nil {
 		return err
 	}
+	if err := a.restore.Wait(context.Background()); err != nil {
+		return err
+	}
 	if err := a.store.Close(context.Background()); err != nil {
 		return err
 	}
@@ -149,6 +154,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /logout", a.requireHTMLState(a.handleLogout))
 	mux.HandleFunc("GET /dashboard", a.requireHTMLAuth(a.handleDashboardPage))
 	mux.HandleFunc("GET /backups", a.requireHTMLAuth(a.handleBackupsPage))
+	mux.HandleFunc("GET /restore", a.requireHTMLAuth(a.handleRestorePage))
 	mux.HandleFunc("GET /settings", a.requireHTMLAuth(a.handleSettingsPage))
 	mux.HandleFunc("GET /logs", a.requireHTMLAuth(a.handleLogsPage))
 
@@ -159,6 +165,12 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/settings", a.requireAPIState(a.handleSaveSettingsAPI))
 	mux.HandleFunc("POST /api/backups/trigger", a.requireAPIState(a.handleTriggerBackupAPI))
 	mux.HandleFunc("GET /api/retention-runs", a.requireAPIAuth(a.handleRetentionRunsAPI))
+	mux.HandleFunc("GET /api/restore-runs", a.requireAPIAuth(a.handleRestoreRunsAPI))
+	mux.HandleFunc("GET /api/restore-runs/{id}", a.requireAPIAuth(a.handleGetRestoreRunAPI))
+	mux.HandleFunc("GET /api/restore/backups", a.requireAPIAuth(a.handleListBackupsAPI))
+	mux.HandleFunc("GET /api/restore/databases", a.requireAPIAuth(a.handleListDatabasesAPI))
+	mux.HandleFunc("POST /api/restore/trigger", a.requireAPIState(a.handleTriggerRestoreAPI))
+	mux.HandleFunc("POST /api/restore/{id}/cancel", a.requireAPIState(a.handleCancelRestoreAPI))
 	mux.HandleFunc("GET /api/audit-events", a.requireAPIAuth(a.handleAuditEventsAPI))
 
 	return a.withRecovery(a.withRequestLogging(mux))
@@ -264,6 +276,54 @@ func (a *App) handleLogsPage(w http.ResponseWriter, r *http.Request, user UserSe
 		CSRFToken:     user.CSRFToken,
 		Version:       a.templates.Version,
 	})
+}
+
+func (a *App) handleRestorePage(w http.ResponseWriter, r *http.Request, user UserSession) {
+	// Get database list for the dropdown
+	databases := a.restore.GetDatabases()
+
+	// Convert to list for template
+	var dbList []map[string]any
+	for id, db := range databases {
+		dbList = append(dbList, map[string]any{
+			"ID":   id,
+			"Name": db.Name,
+		})
+	}
+
+	// If no multi-db, provide default
+	if len(dbList) == 0 {
+		dbList = []map[string]any{
+			{
+				"ID":   "default",
+				"Name": "Default Database",
+			},
+		}
+	}
+
+	// Render page with database list
+	data := struct {
+		Title         string
+		Page          string
+		Authenticated bool
+		Username      string
+		CSRFToken     string
+		Version       string
+		Databases     []map[string]any
+	}{
+		Title:         "Restore",
+		Page:          "restore",
+		Authenticated: true,
+		Username:      user.Username,
+		CSRFToken:     user.CSRFToken,
+		Version:       a.templates.Version,
+		Databases:     dbList,
+	}
+
+	if err := a.templates.Render(w, "restore", data); err != nil {
+		a.logger.Error("render restore page", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
 }
 
 func (a *App) handleOverviewAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
@@ -451,6 +511,151 @@ func (a *App) handleAuditEventsAPI(w http.ResponseWriter, r *http.Request, user 
 		Total:      total,
 		TotalPages: totalPages(total, pageSize),
 	})
+}
+
+func (a *App) handleRestoreRunsAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
+	_ = user
+	page := queryInt(r, "page", 1)
+	pageSize := queryInt(r, "pageSize", 20)
+
+	// Get filter parameters
+	databaseID := r.URL.Query().Get("database")
+	status := r.URL.Query().Get("status")
+
+	// Build filter
+	filter := store.RestoreRunFilter{
+		DatabaseID: databaseID,
+		Status:     status,
+	}
+
+	// Calculate offset
+	offset := (page - 1) * pageSize
+
+	// Get restore runs
+	items, total, err := a.restore.GetRestoreRuns(filter, pageSize, offset)
+	if err != nil {
+		a.writeAPIError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	a.writeJSON(w, http.StatusOK, paginatedResponse[store.RestoreRun]{
+		Items:      items,
+		Page:       page,
+		PageSize:   pageSize,
+		Total:      total,
+		TotalPages: totalPages(total, pageSize),
+	})
+}
+
+func (a *App) handleGetRestoreRunAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
+	_ = user
+	restoreID := r.PathValue("id")
+
+	restoreRun, err := a.restore.GetRestoreRun(restoreID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			a.writeAPIErrorMessage(w, http.StatusNotFound, "Restore run not found")
+			return
+		}
+		a.writeAPIError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	a.writeJSON(w, http.StatusOK, restoreRun)
+}
+
+func (a *App) handleTriggerRestoreAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
+	var req RestoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		a.writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	restoreRun, err := a.restore.TriggerRestore(&req, user.Username)
+	if err != nil {
+		a.writeAPIError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	a.writeJSON(w, http.StatusAccepted, map[string]any{
+		"message": "Restore started",
+		"run":     restoreRun,
+	})
+}
+
+func (a *App) handleCancelRestoreAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
+	restoreID := r.PathValue("id")
+
+	if err := a.restore.CancelRestore(restoreID); err != nil {
+		a.writeAPIError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	a.recordAudit(r.Context(), "restore.cancelled", user.Username, "Restore cancelled", map[string]any{
+		"restore_id": restoreID,
+	})
+
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Restore cancelled",
+		"id":      restoreID,
+	})
+}
+
+func (a *App) handleListBackupsAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
+	_ = user
+	databaseID := r.URL.Query().Get("database")
+	if databaseID == "" {
+		databaseID = "default"
+	}
+
+	backups, err := a.restore.ListAvailableBackups(databaseID)
+	if err != nil {
+		a.writeAPIError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"database": databaseID,
+		"backups":  backups,
+	})
+}
+
+func (a *App) handleListDatabasesAPI(w http.ResponseWriter, r *http.Request, user UserSession) {
+	_ = user
+	databases := a.restore.GetDatabases()
+
+	// Convert to list for API response
+	var dbList []map[string]any
+	for id, db := range databases {
+		dbList = append(dbList, map[string]any{
+			"id":              id,
+			"name":            db.Name,
+			"host":            db.Host,
+			"port":            db.Port,
+			"user":            db.User,
+			"database":        db.Database,
+			"s3_prefix":       db.S3Prefix,
+			"filename_prefix": db.FilenamePrefix,
+			"schedule":        db.BackupSchedule,
+			"retention_days":  db.RetentionDays,
+			"tags":            db.Tags,
+			"enabled":         db.Enabled,
+		})
+	}
+
+	// If no multi-db, return default
+	if len(dbList) == 0 {
+		dbList = []map[string]any{
+			{
+				"id":       "default",
+				"name":     "Default Database",
+				"host":     a.cfg.Base.Postgres.Host,
+				"database": a.cfg.Base.Postgres.Database,
+			},
+		}
+	}
+
+	a.writeJSON(w, http.StatusOK, dbList)
 }
 
 func (a *App) requireHTMLAuth(next func(http.ResponseWriter, *http.Request, UserSession)) http.HandlerFunc {

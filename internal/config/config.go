@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,10 +13,14 @@ import (
 
 type Config struct {
 	Log      LogConfig
-	Postgres PostgresConfig
+	Postgres PostgresConfig  // Single database config (backward compatibility)
 	Backup   BackupConfig
 	S3       S3Config
 	Retry    RetryConfig
+
+	// Multi-database support
+	MultiDatabaseMode bool           // Enable multi-database mode
+	Databases         DatabaseList   // List of database configurations
 }
 
 type LogConfig struct {
@@ -83,6 +88,12 @@ func (c Config) LogFields() []any {
 }
 
 func Load() (Config, error) {
+	// Check if multi-database mode is enabled
+	multiDbMode, err := readBool("MULTI_DATABASE_MODE", false)
+	if err != nil {
+		return Config{}, err
+	}
+
 	port, err := readInt("PGPORT", 5432)
 	if err != nil {
 		return Config{}, err
@@ -109,6 +120,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
+		MultiDatabaseMode: multiDbMode,
 		Log: LogConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),
 			Format: getEnv("LOG_FORMAT", "json"),
@@ -144,8 +156,21 @@ func Load() (Config, error) {
 		},
 	}
 
-	if cfg.Backup.FilenamePrefix == "" {
-		cfg.Backup.FilenamePrefix = cfg.Postgres.Database
+	// If multi-database mode is enabled, load database configurations
+	if cfg.MultiDatabaseMode {
+		dbConfigFile := getEnv("DATABASE_CONFIG_FILE", "databases.json")
+		if dbConfigFile != "" {
+			databases, err := LoadDatabasesFromFile(dbConfigFile)
+			if err != nil {
+				return Config{}, fmt.Errorf("failed to load database config: %w", err)
+			}
+			cfg.Databases = databases
+		}
+	} else {
+		// In single-database mode, set default filename prefix
+		if cfg.Backup.FilenamePrefix == "" {
+			cfg.Backup.FilenamePrefix = cfg.Postgres.Database
+		}
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -158,24 +183,7 @@ func Load() (Config, error) {
 func (c Config) Validate() error {
 	var problems []string
 
-	if c.Postgres.Host == "" {
-		problems = append(problems, "PGHOST is required")
-	}
-	if c.Postgres.Port < 1 || c.Postgres.Port > 65535 {
-		problems = append(problems, "PGPORT must be between 1 and 65535")
-	}
-	if c.Postgres.Username == "" {
-		problems = append(problems, "PGUSER is required")
-	}
-	if c.Postgres.Database == "" {
-		problems = append(problems, "PGDATABASE is required")
-	}
-	if c.Postgres.PGDumpPath == "" {
-		problems = append(problems, "PG_DUMP_PATH is required")
-	}
-	if c.Postgres.PGRestorePath == "" {
-		problems = append(problems, "PG_RESTORE_PATH is required")
-	}
+	// Common validation
 	if c.Backup.OutputDir == "" {
 		problems = append(problems, "BACKUP_OUTPUT_DIR is required")
 	}
@@ -205,6 +213,37 @@ func (c Config) Validate() error {
 	}
 	if !validLogFormat(c.Log.Format) {
 		problems = append(problems, "LOG_FORMAT must be either text or json")
+	}
+
+	// Mode-specific validation
+	if c.MultiDatabaseMode {
+		// Multi-database mode validation
+		if len(c.Databases.Databases) == 0 {
+			problems = append(problems, "At least one database must be configured in multi-database mode")
+		}
+		if err := c.Databases.Validate(); err != nil {
+			problems = append(problems, err.Error())
+		}
+	} else {
+		// Single database mode validation
+		if c.Postgres.Host == "" {
+			problems = append(problems, "PGHOST is required")
+		}
+		if c.Postgres.Port < 1 || c.Postgres.Port > 65535 {
+			problems = append(problems, "PGPORT must be between 1 and 65535")
+		}
+		if c.Postgres.Username == "" {
+			problems = append(problems, "PGUSER is required")
+		}
+		if c.Postgres.Database == "" {
+			problems = append(problems, "PGDATABASE is required")
+		}
+		if c.Postgres.PGDumpPath == "" {
+			problems = append(problems, "PG_DUMP_PATH is required")
+		}
+		if c.Postgres.PGRestorePath == "" {
+			problems = append(problems, "PG_RESTORE_PATH is required")
+		}
 	}
 
 	if len(problems) > 0 {
@@ -284,6 +323,50 @@ func validLogFormat(format string) bool {
 	default:
 		return false
 	}
+}
+
+// LoadDatabasesFromFile loads database configurations from a JSON file
+func LoadDatabasesFromFile(filename string) (DatabaseList, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return DatabaseList{}, fmt.Errorf("failed to read database config file: %w", err)
+	}
+
+	var dbList DatabaseList
+	if err := json.Unmarshal(data, &dbList); err != nil {
+		return DatabaseList{}, fmt.Errorf("failed to parse database config JSON: %w", err)
+	}
+
+	// Load passwords from environment variables if not in config file
+	for i := range dbList.Databases {
+		db := &dbList.Databases[i]
+
+		// Check for database-specific password env var first
+		envKey := fmt.Sprintf("PGPASSWORD_%s", strings.ToUpper(db.ID))
+		if password := os.Getenv(envKey); password != "" {
+			db.Password = password
+		} else if db.Password == "" && os.Getenv("PGPASSWORD") != "" {
+			// Fall back to general PGPASSWORD if no specific one
+			db.Password = os.Getenv("PGPASSWORD")
+		}
+
+		// Set defaults from global config if not specified
+		if db.CompressionLevel == 0 {
+			db.CompressionLevel = 6 // Default compression
+		}
+		if db.Port == 0 {
+			db.Port = 5432 // Default PostgreSQL port
+		}
+		if db.SSLMode == "" {
+			db.SSLMode = "disable"
+		}
+	}
+
+	if err := dbList.Validate(); err != nil {
+		return DatabaseList{}, fmt.Errorf("invalid database configuration: %w", err)
+	}
+
+	return dbList, nil
 }
 
 func ParseAssignment(line string) (string, string, error) {

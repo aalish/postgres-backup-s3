@@ -1,0 +1,68 @@
+{
+  "databases": [
+    {
+      "id": "production",
+      "name": "Production Database",
+      "host": "prod-db.example.com",
+      "port": 5432,
+      "user": "postgres",
+      "database": "production_db",
+      "ssl_mode": "require",
+      "enabled": true,
+      "backup_schedule": "0 2 * * *",
+      "retention_days": 30,
+      "compression_level": 6,
+      "s3_prefix": "backups/production",
+      "filename_prefix": "prod",
+      "tags": ["critical", "production"]
+    },
+    {
+      "id": "staging",
+      "name": "Staging Database",
+      "host": "staging-db.example.com",
+      "port": 5432,
+      "user": "postgres",
+      "database": "staging_db",
+      "ssl_mode": "disable",
+      "enabled": true,
+      "backup_schedule": "0 4 * * *",
+      "retention_days": 7,
+      "compression_level": 9,
+      "s3_prefix": "backups/staging",
+      "filename_prefix": "staging",
+      "tags": ["staging"]
+    },
+    {
+      "id": "development",
+      "name": "Development Database",
+      "host": "dev-db.example.com",
+      "port": 5432,
+      "user": "postgres",
+      "database": "development_db",
+      "ssl_mode": "disable",
+      "enabled": false,
+      "backup_schedule": "0 6 * * 1",
+      "retention_days": 3,
+      "compression_level": 0,
+      "s3_prefix": "backups/development",
+      "filename_prefix": "dev",
+      "tags": ["development", "non-critical"]
+    },
+    {
+      "id": "analytics",
+      "name": "Analytics Database",
+      "host": "analytics-db.example.com",
+      "port": 5432,
+      "user": "analytics_user",
+      "database": "analytics",
+      "ssl_mode": "verify-full",
+      "enabled": true,
+      "backup_schedule": "0 23 * * *",
+      "retention_days": 90,
+      "compression_level": 9,
+      "s3_prefix": "backups/analytics",
+      "filename_prefix": "analytics",
+      "tags": ["analytics", "data-warehouse"]
+    }
+  ]
+}

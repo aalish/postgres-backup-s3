@@ -23,12 +23,20 @@ const (
 	backupRunsCollection = "backup_runs"
 	retentionCollection  = "retention_runs"
 	auditCollection      = "audit_events"
+	usersCollection      = "users"
+	databasesCollection  = "databases"
+	restoreRunsCollection = "restore_runs"
 )
 
 type Store struct {
 	client *mongo.Client
 	db     *mongo.Database
 	logger *slog.Logger
+
+	// Collection handles
+	users       *mongo.Collection
+	databases   *mongo.Collection
+	restoreRuns *mongo.Collection
 }
 
 func New(ctx context.Context, cfg config.MongoConfig, logger *slog.Logger) (*Store, error) {
@@ -44,9 +52,17 @@ func New(ctx context.Context, cfg config.MongoConfig, logger *slog.Logger) (*Sto
 		client: client,
 		db:     client.Database(cfg.Database),
 		logger: logger,
+		users:       client.Database(cfg.Database).Collection(usersCollection),
+		databases:   client.Database(cfg.Database).Collection(databasesCollection),
+		restoreRuns: client.Database(cfg.Database).Collection(restoreRunsCollection),
 	}
 	if err := store.ensureIndexes(ctx); err != nil {
 		return nil, err
+	}
+
+	// Create default admin user if no users exist
+	if err := store.ensureDefaultAdmin(ctx); err != nil {
+		logger.Error("failed to ensure default admin", "error", err)
 	}
 
 	return store, nil
@@ -57,6 +73,7 @@ func (s *Store) Close(ctx context.Context) error {
 }
 
 func (s *Store) ensureIndexes(ctx context.Context) error {
+	// Session indexes
 	_, err := s.db.Collection(sessionsCollection).Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
 			Keys: bson.D{{Key: "expires_at", Value: 1}},
@@ -73,6 +90,101 @@ func (s *Store) ensureIndexes(ctx context.Context) error {
 		return fmt.Errorf("create MongoDB session indexes: %w", err)
 	}
 
+	// User indexes
+	_, err = s.users.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "username", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("user_username_unique"),
+		},
+		{
+			Keys:    bson.D{{Key: "email", Value: 1}},
+			Options: options.Index().SetSparse(true).SetUnique(true).SetName("user_email_unique"),
+		},
+		{
+			Keys:    bson.D{{Key: "active", Value: 1}},
+			Options: options.Index().SetName("user_active_idx"),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create user indexes: %w", err)
+	}
+
+	// Database configuration indexes
+	_, err = s.databases.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "database_id", Value: 1}},
+			Options: options.Index().SetUnique(true).SetName("database_id_unique"),
+		},
+		{
+			Keys:    bson.D{{Key: "enabled", Value: 1}},
+			Options: options.Index().SetName("database_enabled_idx"),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create database indexes: %w", err)
+	}
+
+	// Backup runs indexes (add database_id)
+	_, err = s.db.Collection(backupRunsCollection).Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "database_id", Value: 1}, {Key: "started_at", Value: -1}},
+		Options: options.Index().SetName("backup_database_time_idx"),
+	})
+	if err != nil && !mongo.IsDuplicateKeyError(err) {
+		s.logger.Warn("create backup run index", "error", err)
+	}
+
+	// Restore runs indexes
+	_, err = s.restoreRuns.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{Key: "database_id", Value: 1}, {Key: "started_at", Value: -1}},
+			Options: options.Index().SetName("restore_database_time_idx"),
+		},
+		{
+			Keys:    bson.D{{Key: "status", Value: 1}},
+			Options: options.Index().SetName("restore_status_idx"),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("create restore run indexes: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) ensureDefaultAdmin(ctx context.Context) error {
+	// Check if any users exist
+	count, err := s.users.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return fmt.Errorf("count users: %w", err)
+	}
+
+	if count > 0 {
+		return nil // Users already exist
+	}
+
+	// Create default admin user
+	s.logger.Info("creating default admin user")
+
+	passwordHash, err := HashPassword("admin") // Default password
+	if err != nil {
+		return fmt.Errorf("hash default password: %w", err)
+	}
+
+	defaultAdmin := &User{
+		Username:     "admin",
+		Email:        "admin@localhost",
+		PasswordHash: passwordHash,
+		Role:         "admin",
+		Active:       true,
+		Permissions:  DefaultPermissionsByRole("admin"),
+		AllowedDatabases: []string{}, // Empty means all databases
+	}
+
+	if err := s.CreateUser(ctx, defaultAdmin); err != nil {
+		return fmt.Errorf("create default admin: %w", err)
+	}
+
+	s.logger.Info("default admin user created", "username", "admin")
 	return nil
 }
 
