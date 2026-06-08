@@ -341,12 +341,26 @@ func LoadDatabasesFromFile(filename string) (DatabaseList, error) {
 	for i := range dbList.Databases {
 		db := &dbList.Databases[i]
 
-		// Check for database-specific password env var first
-		envKey := fmt.Sprintf("PGPASSWORD_%s", strings.ToUpper(db.ID))
-		if password := os.Getenv(envKey); password != "" {
-			db.Password = password
+		// Look up the database-specific password. Linux env vars are
+		// case-sensitive, but users commonly write the var name with the
+		// same casing as their db.ID (often lowercase or mixed). Try the
+		// uppercase form first (documented convention), then the literal
+		// id, then the lowercase form. Fall back to the global PGPASSWORD.
+		candidates := []string{
+			"PGPASSWORD_" + strings.ToUpper(db.ID),
+			"PGPASSWORD_" + db.ID,
+			"PGPASSWORD_" + strings.ToLower(db.ID),
+		}
+		var resolved string
+		for _, key := range candidates {
+			if v := os.Getenv(key); v != "" {
+				resolved = v
+				break
+			}
+		}
+		if resolved != "" {
+			db.Password = resolved
 		} else if db.Password == "" && os.Getenv("PGPASSWORD") != "" {
-			// Fall back to general PGPASSWORD if no specific one
 			db.Password = os.Getenv("PGPASSWORD")
 		}
 
@@ -398,7 +412,25 @@ func ParseAssignment(line string) (string, string, error) {
 		value = unquoted
 	} else if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
 		value = value[1 : len(value)-1]
+	} else {
+		// Strip trailing inline comments on unquoted values. A '#' counts as
+		// a comment delimiter only when preceded by whitespace, so secrets
+		// containing '#' are preserved.
+		if idx := indexOfInlineComment(value); idx >= 0 {
+			value = strings.TrimSpace(value[:idx])
+		}
 	}
 
 	return key, value, nil
+}
+
+// indexOfInlineComment returns the index of an inline '#' comment marker, or
+// -1 if none is found. Only '#' preceded by whitespace counts.
+func indexOfInlineComment(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '#' && i > 0 && (s[i-1] == ' ' || s[i-1] == '\t') {
+			return i
+		}
+	}
+	return -1
 }
